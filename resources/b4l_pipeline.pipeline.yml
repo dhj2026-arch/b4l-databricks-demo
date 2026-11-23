@@ -1,0 +1,21 @@
+resources:
+  pipelines:
+    b4l_pipeline:
+      name: b4l_lakeflow_etl
+      catalog: ${var.catalog}
+      schema: ${var.schema_prefix}_silver
+      serverless: true
+      continuous: false
+      development: true
+      channel: current
+      root_path: ../src
+      libraries:
+        - file:
+            path: ../src/02_lakeflow_etl.py
+      configuration:
+        b4l.catalog: ${var.catalog}
+        b4l.schema_prefix: ${var.schema_prefix}
+        b4l.secret_scope: ${var.secret_scope}
+        b4l.hmac_key: "{{secrets/${var.secret_scope}/pseudonymisation_key}}"
+        # Bronze timestamps are Lausanne wall-clock times written in a UTC session; read them the same way.
+        spark.sql.session.timeZone: UTC

@@ -1,0 +1,18 @@
+command:
+  - streamlit
+  - run
+  - app.py
+
+env:
+  - name: B4L_CATALOG
+    value: serverless_stable_yqq46w_catalog
+  - name: B4L_SCHEMA_PREFIX
+    value: b4l
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: B4L_GENIE_SPACE_TITLE
+    value: B4L Smart Badminton Center
+  - name: B4L_USE_MOCK
+    value: "false"
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"

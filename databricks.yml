@@ -1,0 +1,30 @@
+bundle:
+  name: b4l_demo
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog holding all demo schemas
+    default: serverless_stable_yqq46w_catalog
+  schema_prefix:
+    description: Prefix for the bronze/silver/gold/models schemas
+    default: b4l
+  warehouse_id:
+    description: SQL warehouse used by Genie and the apps
+    lookup:
+      warehouse: Serverless Starter Warehouse
+  secret_scope:
+    description: Secret scope holding the HMAC pseudonymisation key
+    default: b4l
+  seed:
+    description: Random seed for the synthetic data generator
+    default: "20261123"
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      profile: fevm-serverless-stable-yqq46w

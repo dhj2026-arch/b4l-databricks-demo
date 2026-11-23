@@ -1,0 +1,36 @@
+resources:
+  jobs:
+    b4l_demo_job:
+      name: b4l_demo_job
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema_prefix
+          default: ${var.schema_prefix}
+        - name: seed
+          default: ${var.seed}
+        - name: warehouse_id
+          default: ${var.warehouse_id}
+        - name: secret_scope
+          default: ${var.secret_scope}
+        - name: as_of_date
+          default: ""
+        - name: n_players
+          default: "3000"
+        - name: staff_app_name
+          default: ${resources.apps.staff_ops_app.name}
+      tasks:
+        - task_key: generate_synthetic_data
+          notebook_task:
+            notebook_path: ../src/01_generate_synthetic_data.py
+        - task_key: lakeflow_etl
+          depends_on:
+            - task_key: generate_synthetic_data
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.b4l_pipeline.id}
+            full_refresh: true
+        - task_key: setup_genie
+          depends_on:
+            - task_key: lakeflow_etl
+          notebook_task:
+            notebook_path: ../src/06_setup_genie.py

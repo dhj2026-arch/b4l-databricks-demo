@@ -34,3 +34,8 @@ resources:
             - task_key: lakeflow_etl
           notebook_task:
             notebook_path: ../src/06_setup_genie.py
+        - task_key: train_models
+          depends_on:
+            - task_key: lakeflow_etl
+          notebook_task:
+            notebook_path: ../src/03_train_mlflow_models.py

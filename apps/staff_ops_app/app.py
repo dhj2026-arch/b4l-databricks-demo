@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import domain as d
+import guide
 from data import Settings, make_backend, occupancy, underfilled_slots
 from genie_client import SAMPLE_QUESTIONS, GenieClient
 
@@ -45,6 +46,11 @@ def chf(x: float) -> str:
     return f"CHF {x:,.0f}".replace(",", "'")
 
 
+def how_to_read(text: str) -> None:
+    with st.expander(guide.EXPANDER_LABEL):
+        st.markdown(text)
+
+
 backend, backend_reason = get_backend()
 try:
     AS_OF = backend.as_of_date()
@@ -67,6 +73,14 @@ with st.sidebar:
         f"History {LO:%d %b} → {AS_OF - timedelta(days=1):%d %b}; "
         f"bookings so far until {HI:%d %b}."
     )
+    stale_days = (date.today() - AS_OF).days
+    if stale_days > 0:
+        st.warning(
+            f"Snapshot is {stale_days} day{'s' if stale_days > 1 else ''} old: days from {AS_OF:%d %b} still "
+            "count as upcoming. Re-run `b4l_demo_job` before a demo."
+        )
+    with st.expander("ℹ️ About the snapshot"):
+        st.markdown(guide.SNAPSHOT)
     if st.button("↻ Refresh data"):
         st.cache_data.clear()
         st.rerun()
@@ -82,6 +96,7 @@ tab_heat, tab_slots, tab_players, tab_genie = st.tabs(
 
 # ---------------------------------------------------------------- heatmap
 with tab_heat:
+    how_to_read(guide.HEATMAP)
     c1, c2, _ = st.columns([1, 1, 2])
     day = c1.date_input("Day (jour)", value=min(max(AS_OF, LO), HI), min_value=LO, max_value=HI, key="heat_day")
     hall_choice = c2.selectbox("Hall (salle)", ["All halls", *d.HALLS], key="heat_hall")
@@ -169,6 +184,7 @@ with tab_heat:
 
 # ---------------------------------------------------------------- slots & prices
 with tab_slots:
+    how_to_read(guide.SLOTS)
     first_future = max(AS_OF, LO)
     c1, c2, _ = st.columns([1, 1, 2])
     slot_day = c1.date_input(
@@ -244,7 +260,7 @@ with tab_slots:
 
 # ---------------------------------------------------------------- players
 with tab_players:
-    st.caption("Only pseudonymised player ids (HMAC-SHA256) are shown; names and contacts stay in bronze.")
+    how_to_read(guide.PLAYERS)
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("At-risk regulars (risque de départ)")
@@ -287,6 +303,7 @@ with tab_players:
 with tab_genie:
     st.subheader("Ask Genie (demandez à Genie)")
     st.caption(f"Natural-language questions in French or English on the gold tables · space “{SETTINGS.genie_space_title}”")
+    how_to_read(guide.GENIE)
     if backend.name != "live":
         st.info(
             "Genie needs a live Databricks connection. Deploy the app (or set Databricks auth and "

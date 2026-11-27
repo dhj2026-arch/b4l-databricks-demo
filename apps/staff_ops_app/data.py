@@ -61,6 +61,23 @@ class Backend(Protocol):
 
     def expiring_chrono(self, within_days: int = 14) -> pd.DataFrame: ...
 
+    def pricing_backtest(self) -> pd.DataFrame: ...
+
+    def demand_curve_slots(self) -> pd.DataFrame: ...
+
+    def demand_curve(self, slot_key: str) -> pd.DataFrame: ...
+
+    def price_recommendations(self) -> pd.DataFrame: ...
+
+
+CURVE_SLOT_COLUMNS = ["slot_key", "slot_start_ts", "tier", "demo_label", "base_price_chf", "recommended_price_chf"]
+
+
+def _curve_slots(curves: pd.DataFrame) -> pd.DataFrame:
+    rec = curves[curves["is_recommended"]].rename(columns={"candidate_price_chf": "recommended_price_chf"})
+    return (rec.assign(_demo=rec["demo_label"].isna())
+            .sort_values(["_demo", "slot_start_ts"])[CURVE_SLOT_COLUMNS].reset_index(drop=True))
+
 
 AT_RISK_COLUMNS = [
     "player_uuid", "segment", "skill_tier", "preferred_lang", "avg_monthly_plays_baseline", "plays_prev_30d",
@@ -111,6 +128,19 @@ class MockBackend:
         return df.sort_values(["days_to_pass_expiry", "pass_hours_remaining"], ascending=[True, False])[
             CHRONO_COLUMNS
         ].reset_index(drop=True)
+
+    def pricing_backtest(self) -> pd.DataFrame:
+        return mock_data.static_vs_dynamic_revenue(self._as_of)
+
+    def demand_curve_slots(self) -> pd.DataFrame:
+        return _curve_slots(mock_data.slot_demand_curves(self._as_of))
+
+    def demand_curve(self, slot_key: str) -> pd.DataFrame:
+        c = mock_data.slot_demand_curves(self._as_of)
+        return c[c["slot_key"] == slot_key].sort_values("candidate_price_chf").reset_index(drop=True)
+
+    def price_recommendations(self) -> pd.DataFrame:
+        return mock_data.price_recommendations(self._as_of)
 
 
 def _convert(series: pd.Series, type_name: str) -> pd.Series:
@@ -241,6 +271,30 @@ class SqlBackend:
             {"days": (within_days, "INT")},
         )
 
+    def pricing_backtest(self) -> pd.DataFrame:
+        return self.query(f"SELECT * FROM {self.gold}.static_vs_dynamic_revenue ORDER BY elasticity_scenario, "
+                          "week_start, tier")
+
+    def demand_curve_slots(self) -> pd.DataFrame:
+        return self.query(
+            f"""SELECT slot_key, slot_start_ts, tier, demo_label, base_price_chf,
+                   candidate_price_chf AS recommended_price_chf
+            FROM {self.gold}.slot_demand_curves WHERE is_recommended
+            ORDER BY demo_label IS NULL, slot_start_ts"""
+        )
+
+    def demand_curve(self, slot_key: str) -> pd.DataFrame:
+        return self.query(
+            f"SELECT * FROM {self.gold}.slot_demand_curves WHERE slot_key = :k ORDER BY candidate_price_chf",
+            {"k": (slot_key, "STRING")},
+        )
+
+    def price_recommendations(self) -> pd.DataFrame:
+        return self.query(
+            f"SELECT {', '.join(mock_data.PRICE_REC_COLUMNS)} FROM {self.gold}.slot_price_recommendations "
+            "ORDER BY slot_start_ts"
+        )
+
 
 def databricks_client() -> tuple[Any | None, str]:
     """A WorkspaceClient if the SDK is installed and credentials resolve, else (None, reason)."""
@@ -271,6 +325,29 @@ def occupancy(frame: pd.DataFrame) -> float:
     """Taux d'occupation as a ratio of sums (never an average of rates)."""
     avail = frame["available_minutes"].sum()
     return float((frame["booked_minutes"].sum() + frame["blocked_minutes"].sum()) / avail) if avail else 0.0
+
+
+def pricing_headline(backtest: pd.DataFrame) -> pd.DataFrame:
+    """Per scenario: weekly revenue change, off-peak (Day, Lunch) occupancy change in points, share re-priced.
+
+    Same arithmetic as src/b4l/backtest.py headline (checked by tests/test_staff_app_contract.py).
+    """
+    weeks = backtest["week_start"].nunique()
+    rows = []
+    for scenario, g in backtest.groupby("elasticity_scenario"):
+        off = g[g["tier"].isin([d.DAY, d.LUNCH])]
+        one = g.drop_duplicates(["week_start", "tier"])
+        rows.append({
+            "elasticity_scenario": scenario,
+            "static_revenue_per_week_chf": g["static_revenue_chf"].sum() / weeks,
+            "dynamic_revenue_per_week_chf": g["dynamic_revenue_chf"].sum() / weeks,
+            "revenue_change_per_week_chf": g["revenue_change_chf"].sum() / weeks,
+            "revenue_change_pct": g["revenue_change_chf"].sum() / g["static_revenue_chf"].sum(),
+            "offpeak_occupancy_change_pts": 100 * (off["dynamic_booked_hours"].sum() - off["static_booked_hours"].sum())
+                                             / off["available_hours"].sum(),
+            "share_slots_repriced": one["slots_repriced"].sum() / one["slots"].sum(),
+        })
+    return pd.DataFrame(rows)
 
 
 def underfilled_slots(slots: pd.DataFrame, threshold: float = 0.6) -> pd.DataFrame:

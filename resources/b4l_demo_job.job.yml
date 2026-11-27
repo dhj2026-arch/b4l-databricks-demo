@@ -44,3 +44,8 @@ resources:
             - task_key: train_models
           notebook_task:
             notebook_path: ../src/03b_batch_score.py
+        - task_key: backtest
+          depends_on:
+            - task_key: batch_score
+          notebook_task:
+            notebook_path: ../src/03c_counterfactual_backtest.py

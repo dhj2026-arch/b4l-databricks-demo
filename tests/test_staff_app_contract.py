@@ -5,6 +5,7 @@ from datetime import date, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from b4l import calendar as cal
@@ -45,6 +46,44 @@ def test_mock_frames_have_exact_gold_columns():
         assert not frame.empty, table
 
 
+def test_mock_pricing_frames_match_score_schemas():
+    for table, cols in mock_data.SCORE_COLUMNS.items():
+        assert cols == schemas.column_names(schemas.SCORES[table]), table
+    assert set(mock_data.PRICE_REC_COLUMNS) <= set(schemas.column_names(schemas.SCORES["slot_price_recommendations"]))
+    backend = data.MockBackend(AS_OF)
+    assert list(backend.pricing_backtest().columns) == mock_data.SCORE_COLUMNS["static_vs_dynamic_revenue"]
+    slots = backend.demand_curve_slots()
+    assert set(mock_data.DEMO_CURVE_LABELS) <= set(slots["demo_label"].dropna())
+    curve = backend.demand_curve(slots["slot_key"].iloc[0])
+    assert list(curve.columns) == mock_data.SCORE_COLUMNS["slot_demand_curves"]
+    assert curve["is_recommended"].sum() == 1 and curve["is_tariff"].sum() == 1
+    recs = backend.price_recommendations()
+    assert list(recs.columns) == mock_data.PRICE_REC_COLUMNS
+    assert recs["price_change_pct"].abs().max() <= domain.MAX_MOVE_PCT + 1e-9
+
+
+def test_app_pricing_headline_matches_backtest():
+    from b4l import backtest
+
+    df = mock_data.static_vs_dynamic_revenue(AS_OF)
+    pd.testing.assert_frame_equal(data.pricing_headline(df), backtest.headline(df))
+
+
+def test_mock_pricing_rules_match_default_policy():
+    from b4l import scoring
+
+    p = scoring.DEFAULT_POLICY
+    assert mock_data.MIN_GAIN_PCT == p.min_gain_pct
+    assert mock_data.MIN_GAIN_PCT_WEEKEND == p.min_gain(pr.WEEKEND)
+    assert mock_data.NO_DISCOUNT_DAY_FROM_HOUR == scoring.EVENING_START_HOUR - p.no_discount_hours_before_evening
+    assert not p.no_discount_tiers and not p.no_discount_hours_before_lunch
+
+
+def test_domain_price_bounds_match_pricing_rules():
+    for tier in pr.TIERS:
+        assert domain.price_bounds(tier) == pr.price_bounds(tier)
+
+
 def test_domain_constants_match_pricing_rules():
     assert domain.N_COURTS == pr.N_COURTS
     assert domain.COURT_IDS == pr.COURT_IDS
@@ -58,6 +97,7 @@ def test_domain_constants_match_pricing_rules():
     assert domain.SLOT_MINUTES == pr.SLOT_MINUTES
     assert domain.PASS_PRODUCTS == pr.PASS_PRODUCTS
     assert (domain.PRICE_FLOOR_CHF, domain.PRICE_CEILING_CHF) == (pr.PRICE_FLOOR_CHF, pr.PRICE_CEILING_CHF)
+    assert domain.MAX_MOVE_PCT == pr.MAX_MOVE_PCT
     assert domain.K_ANONYMITY_MIN == schemas.K_ANONYMITY_MIN
 
 

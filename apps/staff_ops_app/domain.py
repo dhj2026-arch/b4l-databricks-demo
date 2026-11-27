@@ -38,6 +38,7 @@ PASS_PRODUCTS = (CARTE_PREPAYEE, PASS_LIBERTE, PASS_CHRONO)
 
 PRICE_FLOOR_CHF = 18.0
 PRICE_CEILING_CHF = 42.0
+MAX_MOVE_PCT = 0.40
 
 HISTORY_DAYS = 168
 FUTURE_DAYS = 14
@@ -163,3 +164,11 @@ def tier_for(start: time, weekday: int, dtype: str) -> str:
 
 def tier_label(tier: str) -> str:
     return f"{tier} ({TIER_LABEL_FR.get(tier, tier)})"
+
+
+def price_bounds(tier: str) -> tuple[float, float]:
+    """Dynamic price range for a tier in whole francs (CHF 18–42, max ±40% from the tariff)."""
+    base = TIER_PRICE_CHF[tier]
+    low = max(PRICE_FLOOR_CHF, base * (1 - MAX_MOVE_PCT))
+    high = min(PRICE_CEILING_CHF, base * (1 + MAX_MOVE_PCT))
+    return float(-(-low // 1)), float(high // 1)

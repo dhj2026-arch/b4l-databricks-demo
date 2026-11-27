@@ -4,12 +4,14 @@ Price recommendation per upcoming slot:
 1. Try every candidate price in the tier's guardrail range (CHF 1 steps).
 2. Predict the final fill at each price. Courts already booked keep their locked price, so only the courts
    still expected to be sold earn the candidate price: expected new revenue = price x (predicted courts - booked).
-3. Keep the price with the highest expected new revenue, but stay at the published tariff unless the gain is at
-   least MIN_GAIN_PCT (avoids churning prices on noise), then apply the guardrails and record the rule.
+3. Keep the price with the highest expected new revenue, subject to the pricing policy (DEFAULT_POLICY): stay at the
+   published tariff unless the gain is at least the minimum (10%, 15% at weekends), and never discount in the 2 hours
+   before the evening tariff. Then apply the guardrails and record the rule.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
@@ -19,6 +21,58 @@ from b4l import ml_features as mf
 from b4l import pricing_rules as pr
 
 MIN_GAIN_PCT = 0.03
+LUNCH_START_HOUR = 11.5
+EVENING_START_HOUR = 17.0
+
+
+@dataclass(frozen=True)
+class PricingPolicy:
+    """Business rules on top of the per-slot revenue optimum.
+
+    The fill model prices each slot on its own, so it cannot see that a discount may only pull players from a busy
+    slot nearby; these rules stop the cases the backtest showed to lose money net of that cannibalisation.
+    """
+
+    min_gain_pct: float = MIN_GAIN_PCT
+    min_gain_pct_by_tier: dict[str, float] = field(default_factory=dict)
+    no_discount_hours_before_evening: float = 0.0
+    no_discount_hours_before_lunch: float = 0.0
+    no_discount_tiers: frozenset[str] = frozenset()
+
+    def min_gain(self, tier: str) -> float:
+        return self.min_gain_pct_by_tier.get(tier, self.min_gain_pct)
+
+    def discount_blocked(self, tier: str, start_hour: float) -> str | None:
+        if tier in self.no_discount_tiers:
+            return f"Discounts are not offered in the {tier} tier"
+        if tier != pr.DAY:
+            return None
+        h = self.no_discount_hours_before_evening
+        if h and start_hour >= EVENING_START_HOUR - h:
+            return f"No discount in the {h:.0f} h before the evening tariff: it would pull players from busy evenings"
+        h = self.no_discount_hours_before_lunch
+        if h and LUNCH_START_HOUR - h <= start_hour < LUNCH_START_HOUR:
+            return f"No discount in the {h:.0f} h before the lunch tariff: it would pull players from lunch"
+        return None
+
+
+POLICY_VARIANTS: dict[str, PricingPolicy] = {
+    "per_slot_3pct": PricingPolicy(),
+    "min_gain_10pct": PricingPolicy(min_gain_pct=0.10),
+    "protect_evening": PricingPolicy(min_gain_pct=0.10, no_discount_hours_before_evening=2.0),
+    "protect_evening_weekend": PricingPolicy(min_gain_pct=0.10, no_discount_hours_before_evening=2.0,
+                                             min_gain_pct_by_tier={pr.WEEKEND: 0.15}),
+    "evening_guard_3pct": PricingPolicy(no_discount_hours_before_evening=2.0,
+                                        no_discount_tiers=frozenset({pr.WEEKEND})),
+    "evening_lunch_guard_5pct": PricingPolicy(min_gain_pct=0.05, no_discount_hours_before_evening=2.0,
+                                              no_discount_hours_before_lunch=1.0,
+                                              no_discount_tiers=frozenset({pr.WEEKEND})),
+    "robust_8pct": PricingPolicy(min_gain_pct=0.08, no_discount_hours_before_evening=2.0,
+                                 min_gain_pct_by_tier={pr.WEEKEND: 0.15}),
+}
+# The only tested set with a positive 03c backtest at low, mid and high price sensitivity.
+DEFAULT_POLICY_NAME = "protect_evening_weekend"
+DEFAULT_POLICY = POLICY_VARIANTS[DEFAULT_POLICY_NAME]
 CHURN_BANDS = ((0.35, "high"), (0.15, "medium"))
 CANCEL_BANDS = ((0.15, "high"), (0.08, "medium"))
 
@@ -46,8 +100,9 @@ def price_curves(slots: pd.DataFrame, predict_fill: Predict) -> pd.DataFrame:
     return grid
 
 
-def recommend_prices(slots: pd.DataFrame, predict_fill: Predict, min_gain_pct: float = MIN_GAIN_PCT) -> pd.DataFrame:
+def recommend_prices(slots: pd.DataFrame, predict_fill: Predict, policy: PricingPolicy | None = None) -> pd.DataFrame:
     """slots: rows from ml_features.fill_features_from_gold (upcoming slots). Returns one row per slot."""
+    policy = policy or DEFAULT_POLICY
     slots = slots.reset_index(drop=True).assign(slot_idx=lambda d: d.index)
     full = slots["booked_courts_now"] >= slots["courts_available"]
     curves = price_curves(slots[~full], predict_fill) if (~full).any() else pd.DataFrame()
@@ -74,14 +129,23 @@ def recommend_prices(slots: pd.DataFrame, predict_fill: Predict, min_gain_pct: f
         rec.update(model_price_chf=float(best["candidate_price_chf"]),
                    expected_fill_at_base=float(at_base["pred_fill"]),
                    expected_revenue_at_base_chf=float(at_base["expected_new_revenue_chf"]))
+        blocked = policy.discount_blocked(s.tier, float(s.start_hour)) if best["candidate_price_chf"] < base else None
+        if blocked:
+            c = c[c["candidate_price_chf"] >= base]
+            best = c.sort_values(["expected_new_revenue_chf", "_dist"], ascending=[False, True]).iloc[0]
         gain = best["expected_new_revenue_chf"] - at_base["expected_new_revenue_chf"]
+        min_gain = policy.min_gain(s.tier)
         if best["candidate_price_chf"] == base:
             chosen = at_base
-            rec.update(applied_rule="keep_tariff", reason="The published tariff has the highest expected revenue")
-        elif gain < min_gain_pct * max(at_base["expected_new_revenue_chf"], 1.0):
-            chosen = at_base
             rec.update(applied_rule="keep_tariff",
-                       reason=f"Expected gain below {min_gain_pct:.0%}; the published tariff is kept")
+                       reason=f"{blocked}; the published tariff is kept" if blocked
+                       else "The published tariff has the highest expected revenue")
+        elif gain < min_gain * max(at_base["expected_new_revenue_chf"], 1.0):
+            chosen = at_base
+            gain_pct = gain / max(at_base["expected_new_revenue_chf"], 1.0)
+            rec.update(applied_rule="keep_tariff",
+                       reason=f"Best price CHF {best['candidate_price_chf']:.0f} would add only {gain_pct:.0%} "
+                              f"(minimum {min_gain:.0%}); the published tariff is kept")
         else:
             g = pr.apply_guardrails(s.tier, float(best["candidate_price_chf"]))
             chosen = c[c["candidate_price_chf"] == g.final_price_chf].iloc[0]

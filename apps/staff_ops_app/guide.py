@@ -42,6 +42,30 @@ Each bar is a 1-hour **booking start time** on an upcoming day (bookings start o
   association rates are never re-priced. The approve button is disabled until Phase 2.
 """
 
+PRICING = """
+**What this shows:** what the last 24 weeks would have earned if every slot had carried the model's price, posted
+two weeks ahead. It is a simulation, not a measurement: the same simulated players and bookings are replayed with
+only the prices changed.
+- **Price sensitivity** (sensibilité au prix) is unknown, so each figure is shown for three assumptions:
+  *low* (players barely react), *mid* and *high* (players switch slot or skip for a few francs). Quote the range.
+- **Protected bookings** (passes, family rate, courses, club blocks) always keep the tariff.
+- **Cannibalisation**: a flexible player can move to a cheaper slot up to 2 hours away. A discount that only pulls
+  players from a full slot nearby shows up as a loss in that slot's tier.
+
+**Single slot:** the curve is the expected revenue at each price. Courts already booked keep their price. The
+recommended price (★) is the highest point, but only if it beats the tariff (◆) by at least 10% (15% at weekends);
+weekday slots in the 2 hours before the evening tariff are never discounted. Otherwise ★ sits on the tariff.
+
+**Why those rules:** the backtest showed that small weekend changes and late-afternoon discounts lose money once
+players moving between slots are counted; with the rules the gain is positive at every price sensitivity.
+
+**Heatmaps:** occupancy per week and tier at the tariff (left) and with dynamic prices (right).
+
+**Histogram:** how far the upcoming recommended prices move from the tariff; the guardrails stop at ±40%.
+
+**Before a decision:** confirm the effect with a pilot (e.g. a few weekday mornings for 4–6 weeks) before going live.
+"""
+
 PLAYERS = """
 Only pseudonymised ids (HMAC-SHA256) are shown; in a real deployment reception looks the person up in the
 booking system.

@@ -45,6 +45,30 @@ GOLD_COLUMNS: dict[str, list[str]] = {
     ],
 }
 
+# Written by the 03b/03c notebooks (src/b4l/schemas.py SCORES), not the pipeline.
+SCORE_COLUMNS: dict[str, list[str]] = {
+    "static_vs_dynamic_revenue": [
+        "week_start", "tier", "elasticity_scenario", "elasticity_k", "static_revenue_chf", "dynamic_revenue_chf",
+        "revenue_change_chf", "revenue_change_pct", "static_booked_hours", "dynamic_booked_hours", "available_hours",
+        "static_occupancy", "dynamic_occupancy", "turned_away_static", "turned_away_dynamic", "slots",
+        "slots_repriced", "avg_price_change_pct", "max_price_change_pct", "avg_dynamic_price_chf", "model_version",
+        "as_of_date",
+    ],
+    "slot_demand_curves": [
+        "slot_key", "slot_date", "slot_start_ts", "tier", "demo_label", "base_price_chf", "candidate_price_chf",
+        "courts_available", "booked_courts_now", "pred_fill", "expected_courts_booked", "expected_occupancy",
+        "expected_new_revenue_chf", "expected_revenue_chf", "is_tariff", "is_recommended", "model_version",
+        "as_of_date",
+    ],
+}
+# Subset of gold.slot_price_recommendations read by the Pricing impact tab.
+PRICE_REC_COLUMNS = [
+    "slot_key", "slot_date", "slot_start_ts", "tier", "base_price_chf", "recommended_price_chf", "price_change_pct",
+    "applied_rule",
+]
+ELASTICITY_SCENARIOS = {"low": 1.5, "mid": 1.0, "high": 0.67}
+DEMO_CURVE_LABELS = ("Quiet Tuesday lunch", "Rainy Saturday spike")
+
 N_PLAYERS = 3000
 BADMATIN_COURTS = d.COURT_IDS[:4]
 SCHOOL_COURTS = d.COURT_IDS[8:10]
@@ -340,3 +364,102 @@ def sponsor_metrics(as_of: date) -> pd.DataFrame:
     for c in ("unique_players", "player_visits", "check_in_persons"):
         df[c] = df[c].astype("Int64")
     return df
+
+
+# Per tier: weekly static revenue CHF, occupancy, rentable court-hours per week, slot starts per week, avg price change.
+_BACKTEST_TIERS = {
+    d.DAY: (5050.0, 0.445, 1150.0, 62, -0.16),
+    d.EVENING: (8150.0, 0.826, 690.0, 36, 0.061),
+    d.LUNCH: (2680.0, 0.58, 230.0, 20, -0.054),
+    d.WEEKEND: (6670.0, 0.666, 1050.0, 53, -0.069),
+}
+# Per scenario and tier: (revenue change, occupancy change), close to the real 03c output.
+_BACKTEST_CHANGE = {
+    "low": {d.DAY: (-0.006, 0.048), d.EVENING: (0.056, -0.012), d.LUNCH: (-0.014, -0.011), d.WEEKEND: (-0.021, 0.012)},
+    "mid": {d.DAY: (0.022, 0.069), d.EVENING: (0.034, -0.019), d.LUNCH: (-0.031, -0.017), d.WEEKEND: (-0.015, 0.021)},
+    "high": {d.DAY: (0.07, 0.098), d.EVENING: (0.011, -0.028), d.LUNCH: (-0.058, -0.027), d.WEEKEND: (-0.016, 0.028)},
+}
+# Mirrors src/b4l/scoring.py DEFAULT_POLICY.
+MIN_GAIN_PCT = 0.10
+MIN_GAIN_PCT_WEEKEND = 0.15
+NO_DISCOUNT_DAY_FROM_HOUR = 15.0
+
+
+@lru_cache(maxsize=4)
+def static_vs_dynamic_revenue(as_of: date) -> pd.DataFrame:
+    first = as_of - timedelta(days=d.HISTORY_DAYS)
+    first -= timedelta(days=first.weekday())
+    weeks = [first + timedelta(weeks=i) for i in range(d.HISTORY_DAYS // 7)]
+    rows = []
+    for scenario, k in ELASTICITY_SCENARIOS.items():
+        rng = _rng("backtest", scenario, as_of)
+        for week in weeks:
+            season = 0.75 if week.month in (7, 8) else 1.0
+            for tier, (rev, occ, avail, slots, change) in _BACKTEST_TIERS.items():
+                d_rev, d_occ = _BACKTEST_CHANGE[scenario][tier]
+                s_occ = float(np.clip(occ * season + rng.normal(0, 0.02), 0.05, 0.98))
+                y_occ = float(np.clip(s_occ + d_occ + rng.normal(0, 0.01), 0.05, 0.98))
+                s_rev = rev * season * s_occ / occ
+                y_rev = s_rev * (1 + d_rev + rng.normal(0, 0.01))
+                repriced = int(slots * rng.uniform(0.55, 0.7))
+                ta = int(rng.poisson(110 * occ ** 6))
+                rows.append((week, tier, scenario, k, round(s_rev, 2), round(y_rev, 2), round(y_rev - s_rev, 2),
+                             (y_rev - s_rev) / s_rev, s_occ * avail, y_occ * avail, avail, s_occ, y_occ, ta,
+                             int(ta * (0.7 if change > 0 else 1.3)), slots, repriced, change * repriced / slots,
+                             min(0.4, abs(change) * 1.8), d.TIER_PRICE_CHF[tier] * (1 + change), 1, as_of))
+    return pd.DataFrame(rows, columns=SCORE_COLUMNS["static_vs_dynamic_revenue"])
+
+
+def _demo_slot_labels(as_of: date) -> dict[datetime, str]:
+    tue = as_of + timedelta(days=(1 - as_of.weekday()) % 7 or 7)
+    sat = as_of + timedelta(days=(5 - as_of.weekday()) % 7 or 7)
+    return {datetime.combine(tue, time(12, 0)): DEMO_CURVE_LABELS[0],
+            datetime.combine(sat, time(10, 0)): DEMO_CURVE_LABELS[1]}
+
+
+@lru_cache(maxsize=4)
+def slot_demand_curves(as_of: date) -> pd.DataFrame:
+    """Constant-elasticity curves for the next 7 days; quiet slots react strongly to price, busy ones barely."""
+    labels = _demo_slot_labels(as_of)
+    rows = []
+    for offset in range(7):
+        slots = slot_features(as_of + timedelta(days=offset), as_of)
+        for s in slots.itertuples(index=False):
+            label = labels.get(s.slot_start_ts.to_pydatetime())
+            rainy_sat = label == DEMO_CURVE_LABELS[1]
+            target = 1.0 if rainy_sat else max(float(s.hist_fill_rate_4w), s.booked_courts_now / max(s.courts_available, 1))
+            if rainy_sat:
+                elasticity = 0.15
+            elif label == DEMO_CURVE_LABELS[0]:
+                elasticity = 2.0
+            else:
+                elasticity = 1.6 if target < 0.6 else 0.6
+            lo, hi = d.price_bounds(s.tier)
+            base = float(s.base_price_chf)
+            curve = []
+            for p in np.arange(lo, hi + 1):
+                fill = float(np.clip(target * (p / base) ** -elasticity, 0, 1))
+                courts = fill * s.courts_available
+                new = max(courts - s.booked_courts_now, 0.0)
+                curve.append((float(p), fill, max(courts, s.booked_courts_now), new * p))
+            allowed = curve
+            if s.tier == d.DAY and s.start_hour >= NO_DISCOUNT_DAY_FROM_HOUR:
+                allowed = [c for c in curve if c[0] >= base]
+            best = max(allowed, key=lambda c: (c[3], -abs(c[0] - base)))
+            at_base = next(c for c in curve if c[0] == base)
+            min_gain = MIN_GAIN_PCT_WEEKEND if s.tier == d.WEEKEND else MIN_GAIN_PCT
+            rec = best[0] if best[3] >= at_base[3] * (1 + min_gain) and s.booked_courts_now < s.courts_available else base
+            for p, fill, booked, new_rev in curve:
+                rows.append((s.slot_key, s.slot_date, s.slot_start_ts, s.tier, label, base, p, s.courts_available,
+                             s.booked_courts_now, fill, booked, booked / max(s.courts_available, 1), new_rev,
+                             s.booked_courts_now * base + new_rev, p == base, p == rec, 1, as_of))
+    return pd.DataFrame(rows, columns=SCORE_COLUMNS["slot_demand_curves"])
+
+
+def price_recommendations(as_of: date) -> pd.DataFrame:
+    c = slot_demand_curves(as_of)
+    r = c[c["is_recommended"]].rename(columns={"candidate_price_chf": "recommended_price_chf"}).copy()
+    r["price_change_pct"] = r["recommended_price_chf"] / r["base_price_chf"] - 1
+    r["applied_rule"] = np.where(r["booked_courts_now"] >= r["courts_available"], "fully_booked",
+                                 np.where(r["price_change_pct"] == 0, "keep_tariff", "within_bounds"))
+    return r[PRICE_REC_COLUMNS].reset_index(drop=True)

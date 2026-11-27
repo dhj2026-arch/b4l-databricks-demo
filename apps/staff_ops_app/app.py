@@ -11,7 +11,7 @@ import streamlit as st
 
 import domain as d
 import guide
-from data import Settings, make_backend, occupancy, underfilled_slots
+from data import Settings, make_backend, occupancy, pricing_headline, underfilled_slots
 from genie_client import SAMPLE_QUESTIONS, GenieClient
 
 st.set_page_config(page_title="B4L Reception & Ops Cockpit", page_icon="🏸", layout="wide")
@@ -90,8 +90,8 @@ with st.sidebar:
 st.title("B4L Fondation · Smart Badminton Center")
 st.caption("Reception & Ops Cockpit · Cockpit accueil et exploitation")
 
-tab_heat, tab_slots, tab_players, tab_genie = st.tabs(
-    ["🗓️ Court heatmap", "💶 Slots & prices", "👥 Players", "💬 Ask Genie"]
+tab_heat, tab_slots, tab_pricing, tab_players, tab_genie = st.tabs(
+    ["🗓️ Court heatmap", "💶 Slots & prices", "📈 Pricing impact", "👥 Players", "💬 Ask Genie"]
 )
 
 # ---------------------------------------------------------------- heatmap
@@ -257,6 +257,125 @@ with tab_slots:
         )
     elif slots is not None:
         st.info("No slot features for this day.")
+
+# ---------------------------------------------------------------- pricing impact
+SCENARIOS = {"low": "Low sensitivity", "mid": "Mid sensitivity", "high": "High sensitivity"}
+
+with tab_pricing:
+    how_to_read(guide.PRICING)
+    st.info(
+        "Simulated backtest: the result depends on how price-sensitive players are, which is an assumption. "
+        "Read it as a range and confirm it with a pilot before changing the tariff."
+    )
+    bt = fetch("pricing_backtest")
+    if bt is not None and bt.empty:
+        st.info("No backtest yet: run the `backtest` task of `b4l_demo_job`.")
+    elif bt is not None:
+        head = pricing_headline(bt).set_index("elasticity_scenario")
+        order = [s for s in SCENARIOS if s in head.index]
+        rev = head.loc[order, "revenue_change_per_week_chf"]
+        pct = head.loc[order, "revenue_change_pct"]
+        occ = head.loc[order, "offpeak_occupancy_change_pts"]
+        m = st.columns(3)
+        m[0].metric("Revenue change per week", f"{chf(rev.min())} to {chf(rev.max())}",
+                    f"{pct.min():+.1%} to {pct.max():+.1%}", delta_color="off")
+        m[1].metric("Off-peak occupancy (Day + Lunch)", f"{occ.min():+.1f} to {occ.max():+.1f} pts", delta_color="off")
+        m[2].metric("Slots re-priced", f"{head['share_slots_repriced'].iloc[0]:.0%}")
+        st.caption(
+            f"Range over low, mid and high price sensitivity · 24 weeks of history · static revenue "
+            f"{chf(head['static_revenue_per_week_chf'].iloc[0])} per week."
+        )
+
+        scenario = st.radio("Price sensitivity (sensibilité au prix)", order, index=order.index("mid") if "mid" in order else 0,
+                            format_func=SCENARIOS.get, horizontal=True, key="pricing_scenario")
+        g = bt[bt["elasticity_scenario"] == scenario]
+        by_tier = g.groupby("tier")[["static_revenue_chf", "dynamic_revenue_chf"]].sum().reindex(d.TIERS)
+        change = by_tier["dynamic_revenue_chf"] - by_tier["static_revenue_chf"]
+        labels = [d.tier_label(t) for t in by_tier.index]
+        fig = go.Figure()
+        fig.add_bar(x=labels, y=by_tier["static_revenue_chf"], name="Tariff (static)", marker_color="#9aa5b1")
+        fig.add_bar(x=labels, y=by_tier["dynamic_revenue_chf"], name="Dynamic prices", marker_color="#4c78a8",
+                    text=[f"{c:+,.0f}".replace(",", "'") for c in change], textposition="outside")
+        fig.update_layout(barmode="group", height=360, margin={"l": 10, "r": 10, "t": 40, "b": 10},
+                          yaxis_title="CHF over 24 weeks", legend={"orientation": "h", "y": 1.12},
+                          title=f"Revenue by tier · {SCENARIOS[scenario].lower()} · labels = change in CHF")
+        st.plotly_chart(fig, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        weeks = sorted(g["week_start"].unique())
+        x = [f"{w:%d %b}" for w in weeks]
+        for col, field, title in ((c1, "static_occupancy", "Occupancy at the tariff"),
+                                  (c2, "dynamic_occupancy", "Occupancy with dynamic prices")):
+            z = g.pivot(index="tier", columns="week_start", values=field).reindex(index=list(d.TIERS), columns=weeks)
+            hm = go.Figure(go.Heatmap(z=z.to_numpy() * 100, x=x, y=labels, zmin=0, zmax=100, colorscale="Blues",
+                                      colorbar={"title": "%"},
+                                      hovertemplate="%{y} · week of %{x}<br>Occupancy %{z:.0f}%<extra></extra>"))
+            hm.update_layout(height=300, margin={"l": 10, "r": 10, "t": 40, "b": 10}, title=title)
+            col.plotly_chart(hm, use_container_width=True)
+
+    st.subheader("One slot: why this price?")
+    curve_slots = fetch("demand_curve_slots")
+    if curve_slots is not None and not curve_slots.empty:
+        def slot_label(i: int) -> str:
+            r = curve_slots.iloc[i]
+            name = f"{r['demo_label']} · " if isinstance(r["demo_label"], str) else ""
+            return f"{name}{pd.Timestamp(r['slot_start_ts']):%a %d %b %H:%M} · {r['tier']} · " \
+                   f"CHF {r['base_price_chf']:.0f} → {r['recommended_price_chf']:.0f}"
+
+        pick = st.selectbox("Upcoming slot", range(len(curve_slots)), format_func=slot_label, key="curve_slot")
+        curve = fetch("demand_curve", curve_slots.iloc[pick]["slot_key"])
+        if curve is not None and not curve.empty:
+            tariff = curve[curve["is_tariff"]]
+            rec = curve[curve["is_recommended"]]
+            fig = go.Figure()
+            fig.add_bar(x=curve["candidate_price_chf"], y=curve["expected_courts_booked"], name="Expected courts booked",
+                        marker_color="#c9d6e3", yaxis="y2", hovertemplate="CHF %{x:.0f}: %{y:.1f} courts<extra></extra>")
+            fig.add_scatter(x=curve["candidate_price_chf"], y=curve["expected_revenue_chf"], name="Expected revenue",
+                            mode="lines+markers", line={"color": "#4c78a8"},
+                            hovertemplate="CHF %{x:.0f}: CHF %{y:.0f} expected<extra></extra>")
+            for frame, name, symbol, color in ((tariff, "Tariff", "diamond", "#333"),
+                                               (rec, "Recommended", "star", "#e4572e")):
+                fig.add_scatter(x=frame["candidate_price_chf"], y=frame["expected_revenue_chf"], name=name,
+                                mode="markers", marker={"symbol": symbol, "size": 16, "color": color})
+            fig.update_layout(
+                height=380, margin={"l": 10, "r": 10, "t": 30, "b": 10}, xaxis_title="Price per court per hour (CHF)",
+                yaxis={"title": "Expected slot revenue (CHF)"},
+                yaxis2={"title": "Courts", "overlaying": "y", "side": "right", "showgrid": False, "rangemode": "tozero"},
+                legend={"orientation": "h", "y": 1.12},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            r0 = curve.iloc[0]
+            if not tariff.empty and not rec.empty:
+                t, r = tariff.iloc[0], rec.iloc[0]
+                text = (f"{int(r0['booked_courts_now'])} of {int(r0['courts_available'])} courts already booked. "
+                        f"At the tariff CHF {t['candidate_price_chf']:.0f}: {t['expected_courts_booked']:.1f} courts, "
+                        f"{chf(t['expected_revenue_chf'])}. ")
+                if r["is_tariff"]:
+                    top = curve.loc[curve["expected_new_revenue_chf"].idxmax()]
+                    gain = top["expected_new_revenue_chf"] / max(t["expected_new_revenue_chf"], 1.0) - 1
+                    text += (f"The tariff is kept: the best price, CHF {top['candidate_price_chf']:.0f}, adds only "
+                             f"{gain:.0%} on the courts still to sell, or the slot is protected by the pricing rules "
+                             "(see How to read this).")
+                else:
+                    text += (f"At CHF {r['candidate_price_chf']:.0f}: {r['expected_courts_booked']:.1f} courts, "
+                             f"{chf(r['expected_revenue_chf'])}.")
+                st.caption(text)
+
+    st.subheader("Upcoming price changes")
+    recs = fetch("price_recommendations")
+    if recs is not None and not recs.empty:
+        pc = recs["price_change_pct"].astype(float) * 100
+        hist = go.Figure(go.Histogram(x=pc, xbins={"start": -42.5, "end": 42.5, "size": 5}, marker_color="#4c78a8",
+                                      hovertemplate="%{x}%: %{y} slots<extra></extra>"))
+        for edge in (-100 * d.MAX_MOVE_PCT, 100 * d.MAX_MOVE_PCT):
+            hist.add_vline(x=edge, line={"color": "#e4572e", "dash": "dash"}, annotation_text="guardrail")
+        hist.update_layout(height=300, margin={"l": 10, "r": 10, "t": 30, "b": 10}, bargap=0.05,
+                           xaxis_title="Recommended vs tariff (%)", yaxis_title="Upcoming slots", xaxis_range=[-45, 45])
+        st.plotly_chart(hist, use_container_width=True)
+        st.caption(
+            f"{len(recs)} upcoming slot starts · {int((pc != 0).sum())} with a new price · prices stay within "
+            f"CHF {d.PRICE_FLOOR_CHF:.0f}–{d.PRICE_CEILING_CHF:.0f} and ±{d.MAX_MOVE_PCT:.0%} of the tariff."
+        )
 
 # ---------------------------------------------------------------- players
 with tab_players:

@@ -3,7 +3,7 @@
 A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton centre at Malley, Lausanne (16 courts). It turns booking data into utilisation insight, a natural-language Q&A for staff (Genie) and, in Phase 2, revenue-maximising prices with a static vs. dynamic pricing backtest. See [SPEC.md](SPEC.md) for the full specification.
 
 **Phase 1:** synthetic data, the Lakeflow pipeline, the Genie space and a read-only staff app.
-**Phase 2 (in progress):** models and batch scoring are done; the static vs. dynamic backtest and Lakebase come next.
+**Phase 2 (in progress):** models, batch scoring and the static vs. dynamic backtest are done; Lakebase comes next.
 
 ```text
 01_generate_synthetic_data  ->  b4l_bronze   (24 weeks + next 14 days, deliberate ~1% dirty rows)
@@ -14,15 +14,22 @@ A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton c
                                               cancellation_risk_model; alias champion)
 03b_batch_score             ->  b4l_gold     (slot_price_recommendations, player_scores,
                                               booking_cancellation_risk)
+03c_counterfactual_backtest ->  b4l_gold     (static_vs_dynamic_revenue, slot_demand_curves)
 06_setup_genie              ->  Genie space "B4L Smart Badminton Center"
-apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, players, Ask Genie)
+apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, pricing impact, players, Ask Genie)
 ```
 
 **Models.** The fill model learns how demand reacts to price from simulated price tests: the 24 weeks are replayed
 four times with a random price per hour inside the guardrails. Churn uses weekly snapshots of regulars, and
 cancellation risk uses each booker's history known at booking time. Each model is validated on the last 4 weeks.
 **Scoring** tries every allowed price for each upcoming slot and keeps the one with the highest expected revenue from
-courts still to be sold, staying at the tariff unless the gain is at least 3%.
+courts still to be sold. It stays at the tariff unless the gain is at least 10% (15% at weekends) and never discounts
+weekday slots in the 2 hours before the evening tariff: the backtest showed those rules are the only tested set that
+gains at every price sensitivity.
+**Backtest** replays the 24 weeks with the same players and intents, with each slot at the price the model would have
+posted two weeks ahead. Passes, family rates and blocks keep the tariff, and flexible players can move to a cheaper slot
+nearby, so the result is net of cannibalisation. It runs at low, mid and high price sensitivity; the staff app's
+*Pricing impact* tab shows the range, revenue by tier, occupancy heatmaps and the demand curve behind any upcoming price.
 
 ## Deploy and run (FEVM workspace)
 
@@ -30,7 +37,7 @@ courts still to be sold, staying at the tariff unless the gain is at least 3%.
 databricks auth login --profile fevm-serverless-stable-yqq46w   # if the token has expired
 databricks bundle validate
 databricks bundle deploy                                         # job, pipeline, app
-databricks bundle run b4l_demo_job                               # generate -> pipeline -> Genie, train -> score (~6 min)
+databricks bundle run b4l_demo_job                               # generate -> pipeline -> Genie, train -> score -> backtest (~8 min)
 databricks bundle run staff_ops_app                              # deploy and start the app
 ```
 

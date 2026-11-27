@@ -70,6 +70,39 @@ def test_recommendations_respect_guardrails(elasticity):
     assert (out["expected_revenue_uplift_chf"] >= -1e-9).all()
 
 
+def test_policy_blocks_discounts_just_before_the_evening():
+    policy = scoring.PricingPolicy(no_discount_hours_before_evening=2.0)
+    late = slot(pr.DAY, booked=0, hist=0.3, start_hour=15.5, slot_start_ts=datetime(2026, 11, 24, 15, 30))
+    early = slot(pr.DAY, booked=0, hist=0.3, start_hour=10.0, slot_start_ts=datetime(2026, 11, 24, 10))
+    out = scoring.recommend_prices(pd.DataFrame([late, early]), stub(2.5), policy)
+    assert out["recommended_price_chf"].iloc[0] == pr.TIER_PRICE_CHF[pr.DAY]
+    assert "evening" in out["reason"].iloc[0]
+    assert out["recommended_price_chf"].iloc[1] < pr.TIER_PRICE_CHF[pr.DAY]
+    lunch_guard = scoring.PricingPolicy(no_discount_hours_before_lunch=1.0)
+    pre_lunch = slot(pr.DAY, booked=0, hist=0.3, start_hour=11.0, slot_start_ts=datetime(2026, 11, 24, 11))
+    out = scoring.recommend_prices(pd.DataFrame([pre_lunch, early]), stub(2.5), lunch_guard)
+    assert out["recommended_price_chf"].iloc[0] == pr.TIER_PRICE_CHF[pr.DAY]
+    assert out["recommended_price_chf"].iloc[1] < pr.TIER_PRICE_CHF[pr.DAY]
+
+
+def test_policy_still_allows_raises_when_discounts_are_blocked():
+    policy = scoring.PricingPolicy(no_discount_tiers=frozenset({pr.LUNCH}))
+    up = scoring.recommend_prices(pd.DataFrame([slot(pr.LUNCH)]), stub(0.3), policy).iloc[0]
+    assert up["recommended_price_chf"] == pr.price_bounds(pr.LUNCH)[1]
+    down = scoring.recommend_prices(pd.DataFrame([slot(pr.LUNCH, booked=0, hist=0.3)]), stub(2.5), policy).iloc[0]
+    assert down["recommended_price_chf"] == pr.TIER_PRICE_CHF[pr.LUNCH]
+
+
+def test_policy_min_gain_by_tier():
+    weekend = slot(pr.WEEKEND, booked=0, hist=0.4)
+    loose = scoring.recommend_prices(pd.DataFrame([weekend]), stub(0.9), scoring.PricingPolicy()).iloc[0]
+    assert loose["recommended_price_chf"] != pr.TIER_PRICE_CHF[pr.WEEKEND]
+    strict = scoring.PricingPolicy(min_gain_pct_by_tier={pr.WEEKEND: 0.5})
+    out = scoring.recommend_prices(pd.DataFrame([weekend]), stub(0.9), strict).iloc[0]
+    assert out["recommended_price_chf"] == pr.TIER_PRICE_CHF[pr.WEEKEND]
+    assert "50%" in out["reason"]
+
+
 def test_bands():
     p = pd.Series([0.05, 0.10, 0.20, 0.50])
     assert list(scoring.band(p, scoring.CHURN_BANDS)) == ["low", "low", "medium", "high"]

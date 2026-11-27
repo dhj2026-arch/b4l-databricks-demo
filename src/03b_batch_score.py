@@ -14,7 +14,9 @@
 # MAGIC **How a price is chosen.** For each upcoming slot, every price in the tier's guardrail range (CHF 1 steps) is
 # MAGIC tried. Courts already booked keep their locked price, so only courts still expected to sell earn the new price:
 # MAGIC expected new revenue = price × (predicted courts booked − courts already booked). The best price is kept only if it
-# MAGIC beats the tariff by at least 3%; otherwise the published tariff stays. Prices never leave CHF 18–42 or ±40%.
+# MAGIC beats the tariff by at least 10% (15% at weekends), and weekday slots in the 2 hours before the evening tariff are
+# MAGIC never discounted (the 03c backtest showed those discounts pull players from full evenings). Otherwise the
+# MAGIC published tariff stays. Prices never leave CHF 18–42 or ±40%.
 
 # COMMAND ----------
 

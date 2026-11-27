@@ -9,6 +9,10 @@ only the bookings made so far are counted. The app does not move the snapshot fo
 """
 
 HEATMAP = """
+**Day outlook:** weather (forecast for upcoming days), Vaud public and school holidays, events at the Vaudoise
+Aréna and what they usually mean for demand, e.g. a rainy weekend fills up (about +25%) and players book earlier.
+It comes from the read-only Unity Catalog function `get_day_context`, which Genie or an agent can call too.
+
 **KPI tiles:** occupancy, revenue, bookings, check-in persons (fréquentation) and waitlist for the selected day.
 - On a **past day**, the deltas compare with the same weekday one week earlier.
 - On an **upcoming day** there are no deltas and the figures are *bookings so far*: a low number a few days

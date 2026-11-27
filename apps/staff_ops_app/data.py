@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+import day_outlook
 import domain as d
 import mock_data
 
@@ -78,6 +79,8 @@ class Backend(Protocol):
     def demand_curve(self, slot_key: str) -> pd.DataFrame: ...
 
     def price_recommendations(self) -> pd.DataFrame: ...
+
+    def day_context(self, start: date, n_days: int = 1) -> pd.DataFrame: ...
 
 
 CURVE_SLOT_COLUMNS = ["slot_key", "slot_start_ts", "tier", "demo_label", "base_price_chf", "recommended_price_chf"]
@@ -151,6 +154,9 @@ class MockBackend:
 
     def price_recommendations(self) -> pd.DataFrame:
         return mock_data.price_recommendations(self._as_of)
+
+    def day_context(self, start: date, n_days: int = 1) -> pd.DataFrame:
+        return day_outlook.mock_day_context(start, n_days, self._as_of)
 
 
 def _convert(series: pd.Series, type_name: str) -> pd.Series:
@@ -303,6 +309,12 @@ class SqlBackend:
         return self.query(
             f"SELECT {', '.join(mock_data.PRICE_REC_COLUMNS)} FROM {self.gold}.slot_price_recommendations "
             "ORDER BY slot_start_ts"
+        )
+
+    def day_context(self, start: date, n_days: int = 1) -> pd.DataFrame:
+        return self.query(
+            f"SELECT {', '.join(day_outlook.COLUMNS)} FROM {self.gold}.get_day_context(:start, :n) ORDER BY date",
+            {"start": (start.isoformat(), "DATE"), "n": (int(n_days), "INT")},
         )
 
 

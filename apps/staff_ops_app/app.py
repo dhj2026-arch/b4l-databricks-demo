@@ -12,6 +12,7 @@ import streamlit as st
 import domain as d
 import guide
 from data import Settings, make_backend, occupancy, pricing_headline, underfilled_slots
+from day_outlook import CONDITION_ICON, HINT_SEPARATOR
 from genie_client import SAMPLE_QUESTIONS, GenieClient
 from ops_store import DECIDABLE, LOG_LIMIT, DecisionError, make_ops_store, slot_time
 
@@ -60,6 +61,29 @@ def chf(x: float) -> str:
 def how_to_read(text: str) -> None:
     with st.expander(guide.EXPANDER_LABEL):
         st.markdown(text)
+
+
+def show_day_outlook(day: date) -> None:
+    """Weather, holidays, Aréna events and the demand hint for one day (UC function get_day_context)."""
+    ctx = fetch("day_context", day, 1)
+    if ctx is None or ctx.empty:
+        st.caption("Day outlook: no weather or calendar data for this day.")
+        return
+    r = ctx.iloc[0]
+    with st.container(border=True):
+        c = st.columns([1.4, 1, 1, 1])
+        if isinstance(r["condition"], str):
+            label = "Forecast" if r["is_forecast"] else "Weather"
+            c[0].markdown(f"{CONDITION_ICON.get(r['condition'], '')} **{label}: {r['condition']}** · "
+                          f"{r['temp_mean_c']:.0f} °C (max {r['temp_max_c']:.0f}) · {r['precip_mm']:.1f} mm")
+        else:
+            c[0].markdown("**Weather:** not available")
+        c[1].markdown(f"🎉 **{r['public_holiday']}**" if isinstance(r["public_holiday"], str) else "No public holiday")
+        c[2].markdown(f"🏫 **{r['school_holiday']}**" if isinstance(r["school_holiday"], str) else "School term")
+        c[3].markdown("🏟️ **Aréna event tonight**" if r["arena_event"] else "No Aréna event")
+        hours = f"Open {r['opening_hours']}" if isinstance(r["opening_hours"], str) else "Closed"
+        hints = str(r["demand_hint"]).split(HINT_SEPARATOR)
+        st.caption(f"**Day outlook · {hours}**  \n" + "  \n".join(f"• {h}" for h in hints))
 
 
 backend, backend_reason = get_backend()
@@ -117,6 +141,7 @@ with tab_heat:
     hall_choice = c2.selectbox("Hall (salle)", ["All halls", *d.HALLS], key="heat_hall")
     hall = None if hall_choice == "All halls" else hall_choice
     dtype = d.day_type(day)
+    show_day_outlook(day)
 
     kpis = fetch("daily_kpis", day - timedelta(days=7), day)
     if dtype == "closed":
@@ -208,6 +233,7 @@ with tab_slots:
     threshold = c2.slider(
         "Under-filled if booked share < x · 4-week fill rate", 0.3, 1.0, 0.6, 0.05, key="slot_threshold"
     )
+    show_day_outlook(slot_day)
     slots = fetch("slot_features", slot_day)
     if d.day_type(slot_day) == "closed":
         st.info("Closed day.")

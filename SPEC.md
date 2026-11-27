@@ -295,6 +295,7 @@ The app service principals get only the grants they need. Lakebase is the only o
   - a pass expiry reminder
   - a retention voucher. `[ASSUMPTION]` A CHF 10 stringing voucher; B4L offers stringing in-house.
 - `find_doubles_partners(player_uuid)` is a table function returning players with the same skill tier and time preferences.
+- `get_day_context(start_date, n_days)` is a table function returning one row per day: day type and opening hours, weather (condition, mean temperature, rain), public holiday, Vaud school holiday, Vaudoise Aréna event, and an English `demand_hint` (e.g. "Rainy weekend: expect busier courts than usual"; Bad'matin not held in school holidays; closed days flagged). It reads the synthetic `weather_lausanne` and `calendar` tables, so it stays consistent with the bookings; a live forecast is out of scope. The staff app shows it as a "Day outlook" strip above the heatmap and the slots.
 
 **Writes** happen in `staff_ops_app` after staff approve: an update to Lakebase plus an `agent_action_log` row. Optionally, an Agent Bricks Supervisor combines the Genie space with these functions, and the app still performs the write.
 
@@ -309,6 +310,7 @@ The app service principals get only the grants they need. Lakebase is the only o
    - It shows the base tier price vs. the dynamic price, and court blocks (Bad'matin, private lessons, club).
    - "Approve AI Price" and "Manual Override" buttons write to Lakebase.
    - A live `agent_action_log` feed: waitlist backfills, doubles invites, vouchers and pass expiry reminders.
+   - A "Day outlook" strip (weather, holidays, Aréna events, demand hint) from `get_day_context`.
    - A **real Genie Conversation API** widget.
    - A **Pricing impact** tab (see 5.F).
 2. **`sponsor_portal_app`, the Sponsor Media Kit preview:**

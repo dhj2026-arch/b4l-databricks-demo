@@ -36,6 +36,11 @@ resources:
             - task_key: lakeflow_etl
           notebook_task:
             notebook_path: ../src/06_setup_genie.py
+        - task_key: setup_tools
+          depends_on:
+            - task_key: setup_genie
+          notebook_task:
+            notebook_path: ../src/05_agent_bricks_tools.py
         - task_key: train_models
           depends_on:
             - task_key: lakeflow_etl

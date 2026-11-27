@@ -18,6 +18,7 @@ A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton c
 04_setup_lakebase           ->  Lakebase project b4l-ops, database databricks_postgres:
                                 b4l_sync.slot_price_recommendations (snapshot synced table),
                                 b4l_ops (live_court_slots, matchmaking_lobbies, agent_action_log)
+05_agent_bricks_tools       ->  b4l_gold     read-only UC function get_day_context (weather, holidays, events)
 06_setup_genie              ->  Genie space "B4L Smart Badminton Center"
 apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, pricing impact, players, Ask Genie)
 ```
@@ -39,6 +40,11 @@ reason, one court at a time. Each decision is one transaction: update the court 
 with the signed-in user's email. Reruns refresh the recommendation and the booked or blocked state but keep staff
 decisions; start times that have passed become `expired`. The app's service principal can only update a court's price,
 status and decision columns and insert into the log (no delete). The app writes to Lakebase only, never to Unity Catalog.
+**UC functions** are read-only tools: they compute, and the app does any write after a person confirms.
+`get_day_context(start_date, n_days)` returns one row per day with opening hours, weather (a forecast for upcoming
+days), Vaud public and school holidays, Vaudoise Aréna events and a demand hint that restates the effects built into
+the simulator (e.g. rainy weekend about +25%). The staff app shows it as a *Day outlook* above the heatmap and the
+slots; the app's service principal has `EXECUTE` on the function only.
 
 ## Deploy and run (FEVM workspace)
 

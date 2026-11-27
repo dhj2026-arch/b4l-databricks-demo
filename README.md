@@ -3,7 +3,7 @@
 A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton centre at Malley, Lausanne (16 courts). It turns booking data into utilisation insight, a natural-language Q&A for staff (Genie) and, in Phase 2, revenue-maximising prices with a static vs. dynamic pricing backtest. See [SPEC.md](SPEC.md) for the full specification.
 
 **Phase 1:** synthetic data, the Lakeflow pipeline, the Genie space and a read-only staff app.
-**Phase 2 (in progress):** models, batch scoring and the static vs. dynamic backtest are done; Lakebase comes next.
+**Phase 2:** models, batch scoring, the static vs. dynamic backtest, and price approvals written to Lakebase.
 
 ```text
 01_generate_synthetic_data  ->  b4l_bronze   (24 weeks + next 14 days, deliberate ~1% dirty rows)
@@ -15,6 +15,9 @@ A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton c
 03b_batch_score             ->  b4l_gold     (slot_price_recommendations, player_scores,
                                               booking_cancellation_risk)
 03c_counterfactual_backtest ->  b4l_gold     (static_vs_dynamic_revenue, slot_demand_curves)
+04_setup_lakebase           ->  Lakebase project b4l-ops, database databricks_postgres:
+                                b4l_sync.slot_price_recommendations (snapshot synced table),
+                                b4l_ops (live_court_slots, matchmaking_lobbies, agent_action_log)
 06_setup_genie              ->  Genie space "B4L Smart Badminton Center"
 apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, pricing impact, players, Ask Genie)
 ```
@@ -30,16 +33,25 @@ gains at every price sensitivity.
 posted two weeks ahead. Passes, family rates and blocks keep the tariff, and flexible players can move to a cheaper slot
 nearby, so the result is net of cannibalisation. It runs at low, mid and high price sensitivity; the staff app's
 *Pricing impact* tab shows the range, revenue by tier, occupancy heatmaps and the demand curve behind any upcoming price.
+**Lakebase** holds the operational state. `live_court_slots` has one row per court and upcoming start time (16 × 342).
+An open court stays at the tariff until staff, in the *Slots & prices* tab, approve the AI price or override it with a
+reason, one court at a time. Each decision is one transaction: update the court row and append to `agent_action_log`
+with the signed-in user's email. Reruns refresh the recommendation and the booked or blocked state but keep staff
+decisions; start times that have passed become `expired`. The app's service principal can only update a court's price,
+status and decision columns and insert into the log (no delete). The app writes to Lakebase only, never to Unity Catalog.
 
 ## Deploy and run (FEVM workspace)
 
 ```bash
 databricks auth login --profile fevm-serverless-stable-yqq46w   # if the token has expired
 databricks bundle validate
-databricks bundle deploy                                         # job, pipeline, app
-databricks bundle run b4l_demo_job                               # generate -> pipeline -> Genie, train -> score -> backtest (~8 min)
+databricks bundle deploy                                         # job, pipeline, app, Lakebase project
 databricks bundle run staff_ops_app                              # deploy and start the app
+databricks bundle run b4l_demo_job                               # generate -> pipeline -> Genie, train -> score -> Lakebase, backtest (~10 min)
 ```
+
+- The Lakebase project `b4l-ops` (Postgres 17, 0.5–2 CU, scales to zero after 5 min) has `prevent_destroy`; `bundle destroy` stops on it.
+- `setup_lakebase` grants the app's service principal its table privileges, so deploy the app before the job (or rerun `--only setup_lakebase` afterwards).
 
 - Everything goes into catalog `serverless_stable_yqq46w_catalog`, in schemas `b4l_bronze`, `b4l_silver`, `b4l_gold` and `b4l_models`. Override with `--var catalog=... --var schema_prefix=...`.
 - Job parameters:
@@ -54,8 +66,9 @@ databricks bundle run staff_ops_app                              # deploy and st
 
 ```bash
 cd apps/staff_ops_app
-B4L_USE_MOCK=true streamlit run app.py                    # offline, deterministic mock data
-DATABRICKS_CONFIG_PROFILE=fevm-serverless-stable-yqq46w DATABRICKS_WAREHOUSE_ID=<id> streamlit run app.py
+B4L_USE_MOCK=true streamlit run app.py                    # offline, deterministic mock data; decisions kept in memory
+DATABRICKS_CONFIG_PROFILE=fevm-serverless-stable-yqq46w DATABRICKS_WAREHOUSE_ID=<id> \
+  B4L_LAKEBASE_ENDPOINT=projects/b4l-ops/branches/production/endpoints/primary streamlit run app.py
 ```
 
 ### Tests and data profile

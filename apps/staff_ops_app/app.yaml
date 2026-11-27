@@ -12,6 +12,10 @@ env:
     valueFrom: sql-warehouse
   - name: B4L_GENIE_SPACE_TITLE
     value: B4L Smart Badminton Center
+  - name: B4L_LAKEBASE_ENDPOINT
+    value: projects/b4l-ops/branches/production/endpoints/primary
+  - name: B4L_LAKEBASE_DATABASE
+    value: databricks_postgres
   - name: B4L_USE_MOCK
     value: "false"
   - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS

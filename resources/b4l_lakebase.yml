@@ -1,0 +1,12 @@
+resources:
+  postgres_projects:
+    b4l_ops:
+      project_id: ${var.lakebase_project}
+      display_name: B4L Ops (live court slots, approvals, action log)
+      pg_version: 17
+      default_endpoint_settings:
+        autoscaling_limit_min_cu: 0.5
+        autoscaling_limit_max_cu: 2
+        suspend_timeout_duration: 300s
+      lifecycle:
+        prevent_destroy: true

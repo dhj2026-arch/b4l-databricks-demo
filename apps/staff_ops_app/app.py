@@ -1,4 +1,4 @@
-"""B4L Reception & Ops Cockpit (Phase 1, read-only)."""
+"""B4L Reception & Ops Cockpit: reads the gold tables; writes price decisions and the action log to Lakebase only."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import domain as d
 import guide
 from data import Settings, make_backend, occupancy, pricing_headline, underfilled_slots
 from genie_client import SAMPLE_QUESTIONS, GenieClient
+from ops_store import DECIDABLE, LOG_LIMIT, DecisionError, make_ops_store, slot_time
 
 st.set_page_config(page_title="B4L Reception & Ops Cockpit", page_icon="🏸", layout="wide")
 
@@ -32,6 +33,16 @@ def load(_backend, backend_name: str, method: str, *args):
 @st.cache_resource(show_spinner=False)
 def get_genie(_backend, backend_name: str) -> GenieClient:
     return GenieClient(_backend.w, SETTINGS.genie_space_title, SETTINGS.genie_space_id)
+
+
+@st.cache_resource(show_spinner=False)
+def get_ops_store(_backend, backend_name: str):
+    return make_ops_store(_backend, SETTINGS.lakebase_endpoint, SETTINGS.lakebase_database, SETTINGS.ops_schema)
+
+
+def current_actor() -> str:
+    """The signed-in user's email (set by the Databricks Apps proxy), else a local placeholder."""
+    return st.context.headers.get("X-Forwarded-Email") or "local-user (no sign-in header)"
 
 
 def fetch(method: str, *args) -> pd.DataFrame | None:
@@ -58,6 +69,7 @@ try:
 except Exception as e:  # noqa: BLE001
     st.error(f"Cannot reach the gold tables: {e}")
     st.stop()
+ops, ops_reason = get_ops_store(backend, backend.name)
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
@@ -85,7 +97,10 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     st.divider()
-    st.caption("Phase 1 · read-only. Price approvals and Lakebase write-back arrive in Phase 2.")
+    if ops.name == "live":
+        st.caption(f"Price decisions: **Lakebase** `{ops_reason}` · `{SETTINGS.ops_schema}`")
+    else:
+        st.caption(f"Price decisions: **in-memory mock** ({ops_reason}); lost when the app restarts.")
 
 st.title("B4L Fondation · Smart Badminton Center")
 st.caption("Reception & Ops Cockpit · Cockpit accueil et exploitation")
@@ -250,13 +265,115 @@ with tab_slots:
                 "underfilled": st.column_config.CheckboxColumn("Dynamic-pricing candidate"),
             },
         )
-        st.button("✅ Approve AI price (Phase 2)", disabled=True, help="Dynamic prices and approvals arrive in Phase 2.")
         st.caption(
-            "Under-filled slots are candidates for demand-based pricing (CHF 18–42, max ±40% from the tier) in "
-            "Phase 2. Slots further ahead naturally have fewer bookings so far; pass holders are never re-priced."
+            "Under-filled slots are candidates for demand-based pricing (CHF 18–42, max ±40% from the tier). "
+            "Slots further ahead naturally have fewer bookings so far; pass holders are never re-priced."
         )
     elif slots is not None:
         st.info("No slot features for this day.")
+
+    st.subheader("Price decisions · one court at a time")
+    flash = st.session_state.pop("decision_flash", None)
+    if flash:
+        st.success(flash)
+    try:
+        summary = ops.slot_summary(slot_day)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Cannot reach Lakebase: {e}")
+        summary = None
+    if summary is not None and summary.empty:
+        st.info("No AI prices for this day yet: recommendations cover the next 7 days (run `b4l_demo_job`).")
+    elif summary is not None:
+        def summary_label(i: int) -> str:
+            r = summary.iloc[i]
+            return (f"{slot_time(r['slot_key'])[-5:]} · {r['tier']} · CHF {r['base_price_chf']:.0f} → "
+                    f"{r['recommended_price_chf']:.0f} · {r['proposed']} open, "
+                    f"{r['approved'] + r['overridden']} decided")
+
+        changed = summary.index[summary["recommended_price_chf"] != summary["base_price_chf"]]
+        pick = st.selectbox("Start time (AI price shown after the arrow)", range(len(summary)),
+                            index=int(changed[0]) if len(changed) else 0, format_func=summary_label,
+                            key=f"decision_slot_{slot_day}")
+        slot = summary.iloc[pick]
+        st.caption(f"Why: {slot['reason']}")
+        courts = ops.court_slots(slot["slot_key"])
+        st.dataframe(
+            courts[["court_id", "hall_zone", "status", "dynamic_price_chf", "recommended_price_chf", "decided_by",
+                    "decided_at", "decision_reason"]],
+            hide_index=True, use_container_width=True,
+            column_config={
+                "court_id": "Court", "hall_zone": "Hall", "status": "Status",
+                "dynamic_price_chf": st.column_config.NumberColumn("Live price", format="CHF %.0f"),
+                "recommended_price_chf": st.column_config.NumberColumn("AI price", format="CHF %.0f"),
+                "decided_by": "Decided by",
+                "decided_at": st.column_config.DatetimeColumn("Decided at", format="DD.MM HH:mm"),
+                "decision_reason": "Reason",
+            },
+        )
+        open_courts = courts[courts["status"].isin(DECIDABLE)]
+        if open_courts.empty:
+            st.info("No open court at this time: booked and blocked courts keep their price.")
+        else:
+            court = st.selectbox(
+                "Court", open_courts["slot_id"].tolist(), key=f"decision_court_{slot['slot_key']}",
+                format_func=lambda sid: (lambda r: f"{r['court_id']} · {r['status']} · live CHF "
+                                                   f"{r['dynamic_price_chf']:.0f}")(
+                    open_courts.set_index("slot_id").loc[sid]),
+            )
+            row = open_courts.set_index("slot_id").loc[court]
+            lo, hi = d.price_bounds(row["tier"])
+            actor = current_actor()
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**Approve AI price** · CHF {row['recommended_price_chf']:.0f}")
+                if st.button(f"✅ Approve CHF {row['recommended_price_chf']:.0f} for {row['court_id']}",
+                             key="approve_btn"):
+                    try:
+                        r = ops.approve(court, actor)
+                        st.session_state["decision_flash"] = (
+                            f"Approved CHF {r['dynamic_price_chf']:.0f} on {r['court_id']} at "
+                            f"{slot_time(r['slot_key'])}.")
+                        st.rerun()
+                    except DecisionError as e:
+                        st.error(str(e))
+            with c2:
+                with st.form("override_form", clear_on_submit=True):
+                    st.markdown(f"**Manual override** · CHF {lo:.0f}–{hi:.0f} for {d.tier_label(row['tier'])}")
+                    price = st.number_input("Price (CHF)", min_value=lo, max_value=hi, step=1.0,
+                                            value=float(min(max(row["recommended_price_chf"], lo), hi)))
+                    reason = st.text_input("Reason (required)", placeholder="e.g. Club tournament warm-up")
+                    if st.form_submit_button(f"✏️ Override {row['court_id']}"):
+                        try:
+                            r = ops.override(court, price, reason, actor)
+                            st.session_state["decision_flash"] = (
+                                f"Override CHF {r['dynamic_price_chf']:.0f} on {r['court_id']} at "
+                                f"{slot_time(r['slot_key'])}.")
+                            st.rerun()
+                        except DecisionError as e:
+                            st.error(str(e))
+            st.caption(f"Signed in as {actor}. Every decision is logged below.")
+
+    st.subheader(f"Action log · latest {LOG_LIMIT}")
+    try:
+        log = ops.action_log(LOG_LIMIT)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Cannot read the action log: {e}")
+        log = None
+    if log is not None and log.empty:
+        st.caption("No decisions yet.")
+    elif log is not None:
+        st.dataframe(
+            log.assign(slot_key=log["slot_key"].map(slot_time)), hide_index=True, use_container_width=True,
+            column_config={
+                "ts": st.column_config.DatetimeColumn("When (UTC)", format="DD.MM HH:mm:ss"),
+                "actor": "Who", "action_type": "Action", "status": "Status", "court_id": "Court",
+                "slot_key": "Slot",
+                "old_price_chf": st.column_config.NumberColumn("Old", format="CHF %.0f"),
+                "new_price_chf": st.column_config.NumberColumn("New", format="CHF %.0f"),
+                "recommended_price_chf": st.column_config.NumberColumn("AI price", format="CHF %.0f"),
+                "reason": "Reason",
+            },
+        )
 
 # ---------------------------------------------------------------- pricing impact
 SCENARIOS = {"low": "Low sensitivity", "mid": "Mid sensitivity", "high": "High sensitivity"}

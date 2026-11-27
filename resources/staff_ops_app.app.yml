@@ -2,7 +2,7 @@ resources:
   apps:
     staff_ops_app:
       name: b4l-staff-ops
-      description: "B4L Reception & Ops Cockpit: court heatmap, slots and prices, players, Ask Genie (Phase 1, read-only)"
+      description: "B4L Reception & Ops Cockpit: court heatmap, slots and price approvals, pricing impact, players, Ask Genie"
       source_code_path: ../apps/staff_ops_app
       resources:
         - name: sql-warehouse
@@ -10,3 +10,9 @@ resources:
           sql_warehouse:
             id: ${var.warehouse_id}
             permission: CAN_USE
+        - name: lakebase
+          description: Lakebase operational tables (live court slots, action log); table grants come from 04_setup_lakebase
+          postgres:
+            branch: ${resources.postgres_projects.b4l_ops.name}/branches/production
+            database: ${resources.postgres_projects.b4l_ops.name}/branches/production/databases/databricks-postgres
+            permission: CAN_CONNECT_AND_CREATE

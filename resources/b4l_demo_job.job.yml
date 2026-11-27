@@ -19,6 +19,8 @@ resources:
           default: "3000"
         - name: staff_app_name
           default: ${resources.apps.staff_ops_app.name}
+        - name: lakebase_project
+          default: ${resources.postgres_projects.b4l_ops.project_id}
       tasks:
         - task_key: generate_synthetic_data
           notebook_task:
@@ -44,6 +46,11 @@ resources:
             - task_key: train_models
           notebook_task:
             notebook_path: ../src/03b_batch_score.py
+        - task_key: setup_lakebase
+          depends_on:
+            - task_key: batch_score
+          notebook_task:
+            notebook_path: ../src/04_setup_lakebase.py
         - task_key: backtest
           depends_on:
             - task_key: batch_score

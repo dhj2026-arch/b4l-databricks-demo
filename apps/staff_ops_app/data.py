@@ -35,6 +35,16 @@ class Settings:
     )
     genie_space_id: str = field(default_factory=lambda: os.getenv("B4L_GENIE_SPACE_ID", ""))
     use_mock: bool = field(default_factory=lambda: _env_flag("B4L_USE_MOCK"))
+    lakebase_endpoint: str = field(default_factory=lambda: os.getenv("B4L_LAKEBASE_ENDPOINT", ""))
+    lakebase_database: str = field(default_factory=lambda: os.getenv("B4L_LAKEBASE_DATABASE", "databricks_postgres"))
+
+    @property
+    def ops_schema(self) -> str:
+        """Postgres schema of the operational tables (src/b4l/lakebase.py schema_names)."""
+        s = f"{self.schema_prefix}_ops"
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", s):
+            raise ValueError(f"Invalid schema: {s!r}")
+        return s
 
     @property
     def gold(self) -> str:

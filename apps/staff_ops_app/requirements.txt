@@ -1,4 +1,5 @@
 streamlit>=1.38,<1.46
 plotly>=5.22
-databricks-sdk>=0.65
+databricks-sdk>=0.81
 pandas>=2.1
+psycopg[binary]>=3.1

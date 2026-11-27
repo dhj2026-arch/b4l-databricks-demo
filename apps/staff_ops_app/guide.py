@@ -37,9 +37,17 @@ Each bar is a 1-hour **booking start time** on an upcoming day (bookings start o
 - The fill rate counts bookings *starting* at that exact time, not hours covered, so it is lower than the
   heatmap's occupancy. Compare slots with their own dotted line, not with the heatmap.
 - Days further ahead always look emptier because people have not booked yet: compare slots within the same day.
-- Story for an under-filled lunch: *"tomorrow's lunch is far behind its usual pace; in Phase 2 the model proposes
-  a lower Tarif midi within the guardrails (CHF 18–42, max ±40%)."* Pass holders and family, school and
-  association rates are never re-priced. The approve button is disabled until Phase 2.
+- Story for an under-filled lunch: *"tomorrow's lunch is far behind its usual pace; the model proposes a lower
+  Tarif midi within the guardrails (CHF 18–42, max ±40%)."* Pass holders and family, school and association
+  rates are never re-priced.
+
+**Price decisions (one court at a time):** pick a start time and an open court, then
+- **Approve AI price** sets the court's live price to the recommendation, or
+- **Manual override** sets a price you choose (whole francs, within the tier's guardrails) with a reason.
+
+Until someone decides, an open court stays at the tariff (*proposed*). Booked and blocked courts cannot be changed.
+Each decision is written to Lakebase together with an entry in the action log (who, when, old and new price).
+Decisions survive the nightly refresh; only the recommendation and its reason are updated.
 """
 
 PRICING = """

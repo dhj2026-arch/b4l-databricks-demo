@@ -24,6 +24,9 @@ variables:
   as_of_date:
     description: Snapshot date ('today') the demo moments are anchored to; empty means today in Lausanne
     default: "2026-11-23"
+  lakebase_project:
+    description: Lakebase Autoscaling project holding the operational tables
+    default: b4l-ops
 
 targets:
   dev:

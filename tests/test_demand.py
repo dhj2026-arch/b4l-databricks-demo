@@ -82,3 +82,11 @@ def test_generated_bronze_passes_hard_rules():
     failed = report[(report["category"] == "hard_rule") & ~report["passed"]]
     assert failed.empty, failed.to_dict("records")
     assert sorted(bronze["demo_moments"]["moment_id"]) == [1, 2, 3, 4, 5]
+
+
+def test_quiet_lunch_is_a_tuesday_for_a_midweek_snapshot():
+    bronze, _, _ = generator.generate(SEED, date(2026, 11, 26))
+    report = bronze["data_quality_report"]
+    assert report[report["category"] != "statistical"]["passed"].all()
+    quiet = bronze["demo_moments"].set_index("moment_id").loc[2, "slot_date"]
+    assert quiet.weekday() == 1

@@ -24,6 +24,7 @@ SEGMENT_SHARE = {
     "Club_Member": 0.14,
 }
 SKILLS = ("Beginner", "Intermediate", "Advanced")
+FLAKY_Z = 1.036  # standard-normal cut-off for the top ~15% of players by cancellation propensity
 
 # Willingness to pay: log(WTP / tariff) ~ Normal(mu, sigma). Share booking at the tariff is
 # Phi(mu / sigma); point elasticity at the tariff is phi(mu/sigma) / (sigma * Phi(mu/sigma)).
@@ -337,7 +338,10 @@ def _assign_lifecycle(players: pd.DataFrame, rng: np.random.Generator, window_st
 
 def _assign_wtp(players: pd.DataFrame, rng: np.random.Generator) -> None:
     players["wtp_z"] = rng.normal(0, 1, len(players))
-    players["cancel_propensity"] = rng.lognormal(-0.125, 0.5, len(players))
+    # ~15% habitual cancellers (~3x the base rate), the rest ~0.65x; the mean multiplier stays ~1.
+    z = rng.normal(0, 1, len(players))
+    flaky = z > FLAKY_Z
+    players["cancel_propensity"] = np.where(flaky, 3.0 * np.exp(0.25 * (z - 1.5)), 0.65 * np.exp(0.25 * z))
 
 
 def lifecycle_multiplier(players: pd.DataFrame, day_offset: int, day: date) -> np.ndarray:
@@ -538,10 +542,7 @@ def setup_demo_moments(world: World) -> None:
     w.loc[mask, "temp_max_c"] = w.loc[mask, "temp_max_c"] - 2.5
     demo["rainy_saturday_idx"] = saturday.idx
 
-    # Prefer a Tuesday 1-3 days ahead (when lunch is normally well booked); otherwise the nearest weekday.
-    near = [d for d in world.days if 1 <= (d.d - world.as_of).days <= 3 and d.day_type == "weekday"
-            and not d.is_public_holiday]
-    tuesday = next((d for d in near if d.weekday == 1), near[0] if near else _first_future(world, 1, 1))
+    tuesday = _first_future(world, 1, 1)
     demo["demand_multiplier"][(tuesday.idx, "lunch")] = 0.35
     demo["quiet_tuesday_idx"] = tuesday.idx
 

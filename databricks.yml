@@ -21,6 +21,9 @@ variables:
   seed:
     description: Random seed for the synthetic data generator
     default: "20261123"
+  as_of_date:
+    description: Snapshot date ('today') the demo moments are anchored to; empty means today in Lausanne
+    default: "2026-11-23"
 
 targets:
   dev:

@@ -26,7 +26,7 @@ databricks bundle run staff_ops_app                              # deploy and st
 - Everything goes into catalog `serverless_stable_yqq46w_catalog`, in schemas `b4l_bronze`, `b4l_silver`, `b4l_gold` and `b4l_models`. Override with `--var catalog=... --var schema_prefix=...`.
 - Job parameters:
   - `seed` (default `20261123`).
-  - `as_of_date` (default empty, meaning today in Lausanne). The demo moments are anchored to it, so re-run the job on the morning of a demo.
+  - `as_of_date` (default `2026-11-23`, a Monday; set by the bundle variable `as_of_date`). The demo moments are anchored to it. Pass `--var as_of_date=""` to use today in Lausanne, for example on the morning of a demo.
   - `n_players` (default 3000).
   - `secret_scope` (default `b4l`).
 - On first run, the generator creates the secret scope `b4l` with a random `pseudonymisation_key`. Keep it: changing the key changes every `player_uuid`.

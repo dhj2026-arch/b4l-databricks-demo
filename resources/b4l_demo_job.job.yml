@@ -39,3 +39,8 @@ resources:
             - task_key: lakeflow_etl
           notebook_task:
             notebook_path: ../src/03_train_mlflow_models.py
+        - task_key: batch_score
+          depends_on:
+            - task_key: train_models
+          notebook_task:
+            notebook_path: ../src/03b_batch_score.py

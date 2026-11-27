@@ -125,6 +125,8 @@ def _start_lambda(day: DayInfo, st: time) -> float:
 
 def build_intents(world: World) -> Intents:
     rng = rng_for(world.seed, 10)
+    # Extra demo demand draws from its own stream so the rest of the world is unchanged.
+    extra_rng = rng_for(world.seed, 11)
     players = world.players
     seg_idx = {s: players.index[players["segment"] == s].to_numpy() for s in synth.SEGMENTS}
     activity = players["activity"].to_numpy()
@@ -152,22 +154,23 @@ def build_intents(world: World) -> Intents:
             demo_mult = demo.get("demand_multiplier", {}).get((day.idx, band), 1.0)
             if demo.get("rainy_saturday_idx") == day.idx:
                 demo_mult *= 1.5
+            extra = demo.get("extra_demand", {}).get((day.idx, band), 0.0)
             for seg, mshare in mix.items():
                 lam = lam_start * mshare * smult[seg] * demo_mult
-                n = rng.poisson(lam)
-                if n == 0:
-                    continue
                 idx = seg_idx[seg]
                 hd = (habit_day[idx] == day.weekday) | (habit_day2[idx] == day.weekday)
-                hmatch = np.where(hd, 1.0 + 3.0 * np.exp(-((habit_hour[idx] - hour) / 0.6) ** 2), 1.0)
-                w = base_w[idx] * hmatch
-                tot = w.sum()
-                if tot <= 0:
-                    continue
-                chosen = rng.choice(idx, size=n, p=w / tot)
-                for pidx in chosen:
-                    habit_match = bool(hd[np.searchsorted(idx, pidx)]) and abs(habit_hour[pidx] - hour) <= 1.0
-                    rows.append(_make_intent(rng, world, day, st, int(pidx), seg, habit_match))
+                for r, n in ((rng, rng.poisson(lam)), (extra_rng, extra_rng.poisson(lam * extra) if extra else 0)):
+                    if n == 0:
+                        continue
+                    hmatch = np.where(hd, 1.0 + 3.0 * np.exp(-((habit_hour[idx] - hour) / 0.6) ** 2), 1.0)
+                    w = base_w[idx] * hmatch
+                    tot = w.sum()
+                    if tot <= 0:
+                        continue
+                    chosen = r.choice(idx, size=n, p=w / tot)
+                    for pidx in chosen:
+                        habit_match = bool(hd[np.searchsorted(idx, pidx)]) and abs(habit_hour[pidx] - hour) <= 1.0
+                        rows.append(_make_intent(r, world, day, st, int(pidx), seg, habit_match))
         rows.extend(_group_habit_intents(rng, world, day, wrow, life))
     for forced in demo.get("forced_intents", []):
         day = world.days[forced["day_idx"]]

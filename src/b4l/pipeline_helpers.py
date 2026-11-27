@@ -81,6 +81,13 @@ def slot_grid_rows() -> list[tuple]:
     return rows
 
 
+def require_hmac_key(key: str | None) -> str:
+    """Reject a missing, short or unresolved ({{secrets/...}}) pseudonymisation key."""
+    if not key or key.startswith("{{secrets/") or len(key) < 32:
+        raise ValueError("Pseudonymisation key is missing or unresolved; read it with dbutils.secrets.get")
+    return key
+
+
 def hmac_hex(key: str, value: str | None) -> str | None:
     """Pseudonymised player id: hex HMAC-SHA256 of the booking-system id."""
     if value is None:

@@ -2,16 +2,27 @@
 
 A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton centre at Malley, Lausanne (16 courts). It turns booking data into utilisation insight, a natural-language Q&A for staff (Genie) and, in Phase 2, revenue-maximising prices with a static vs. dynamic pricing backtest. See [SPEC.md](SPEC.md) for the full specification.
 
-**Phase 1 (this repo today):** synthetic data, the Lakeflow pipeline, the Genie space and a read-only staff app.
+**Phase 1:** synthetic data, the Lakeflow pipeline, the Genie space and a read-only staff app.
+**Phase 2 (in progress):** models and batch scoring are done; the static vs. dynamic backtest and Lakebase come next.
 
 ```text
 01_generate_synthetic_data  ->  b4l_bronze   (24 weeks + next 14 days, deliberate ~1% dirty rows)
 02_lakeflow_etl (SDP)       ->  b4l_silver   (deduplicated, HMAC-pseudonymised, quarantine)
                             ->  b4l_gold     (court_utilization_hourly, daily_kpis, player_features,
                                               slot_features, sponsor_metrics)
+03_train_mlflow_models      ->  b4l_models   (fill_probability_model, player_churn_model,
+                                              cancellation_risk_model; alias champion)
+03b_batch_score             ->  b4l_gold     (slot_price_recommendations, player_scores,
+                                              booking_cancellation_risk)
 06_setup_genie              ->  Genie space "B4L Smart Badminton Center"
 apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, players, Ask Genie)
 ```
+
+**Models.** The fill model learns how demand reacts to price from simulated price tests: the 24 weeks are replayed
+four times with a random price per hour inside the guardrails. Churn uses weekly snapshots of regulars, and
+cancellation risk uses each booker's history known at booking time. Each model is validated on the last 4 weeks.
+**Scoring** tries every allowed price for each upcoming slot and keeps the one with the highest expected revenue from
+courts still to be sold, staying at the tariff unless the gain is at least 3%.
 
 ## Deploy and run (FEVM workspace)
 
@@ -19,7 +30,7 @@ apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, 
 databricks auth login --profile fevm-serverless-stable-yqq46w   # if the token has expired
 databricks bundle validate
 databricks bundle deploy                                         # job, pipeline, app
-databricks bundle run b4l_demo_job                               # generate -> pipeline -> Genie (~10-15 min)
+databricks bundle run b4l_demo_job                               # generate -> pipeline -> Genie, train -> score (~6 min)
 databricks bundle run staff_ops_app                              # deploy and start the app
 ```
 
@@ -29,7 +40,7 @@ databricks bundle run staff_ops_app                              # deploy and st
   - `as_of_date` (default `2026-11-23`, a Monday; set by the bundle variable `as_of_date`). The demo moments are anchored to it. Pass `--var as_of_date=""` to use today in Lausanne, for example on the morning of a demo.
   - `n_players` (default 3000).
   - `secret_scope` (default `b4l`).
-- On first run, the generator creates the secret scope `b4l` with a random `pseudonymisation_key`. Keep it: changing the key changes every `player_uuid`.
+- On first run, the generator creates the secret scope `b4l` with a random `pseudonymisation_key`. Keep it: changing the key changes every `player_uuid`. The pipeline reads it with `dbutils.secrets.get` and fails if it is missing.
 - The app is granted access by the `setup_genie` task. If the app didn't exist yet when the job ran, run `databricks bundle run b4l_demo_job --only setup_genie` after deploying it.
 
 ### Run the app locally
@@ -71,9 +82,9 @@ Profile for seed `20261123`, as of 2026-11-23 (history 2026-06-08 to 2026-11-22)
 ### Demo moments (`b4l_bronze.demo_moments`)
 
 1. **Rainy Saturday spike.** The next Saturday at least 2 days ahead has heavy rain forecast and is booking ahead of a usual dry Saturday.
-2. **Quiet Tuesday lunch.** It is 1–3 days ahead and well behind its usual pace: a candidate for a lower price.
+2. **Quiet Tuesday lunch.** The next non-holiday Tuesday, well behind its usual pace: a candidate for a lower price.
 3. **Drifting evening regular.** Plays in the last 30 days dropped to 35% of their baseline or less (`churn_risk_rule`).
-4. **Likely late cancellation.** An upcoming Thursday 19:00 booking by a player with a history of late cancellations. Thursday evenings are full, so a freed court can go to the waitlist.
+4. **Likely late cancellation.** An upcoming 19:00 booking by a player with a history of late cancellations, on Thursday when it is 2–4 days ahead (otherwise the nearest weekday evening). That evening gets extra demand so it is full with an open waitlist, and a freed court can go to the next waitlisted player.
 5. **Pass Chrono about to expire.** Unused hours expire within 2–10 days.
 
 ## Key assumptions (details in SPEC.md)

@@ -2,10 +2,11 @@
 
 Every dataset is a materialized view over batch reads because the generator overwrites bronze on each run.
 Silver lands in the pipeline default schema ({prefix}_silver); gold uses fully-qualified names in {prefix}_gold.
-Players are pseudonymised with HMAC-SHA256 keyed by the secret-scope key (b4l.hmac_key).
+Players are pseudonymised with HMAC-SHA256 keyed by the secret {b4l.secret_scope}/pseudonymisation_key.
 """
 
 import pandas as pd
+from databricks.sdk.runtime import dbutils
 from pyspark import pipelines as dp
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
@@ -16,7 +17,8 @@ from b4l import schemas
 
 CATALOG = spark.conf.get("b4l.catalog")
 PREFIX = spark.conf.get("b4l.schema_prefix")
-HMAC_KEY = spark.conf.get("b4l.hmac_key")
+# Pipeline configuration values don't resolve {{secrets/...}} references, so the key is read here.
+HMAC_KEY = ph.require_hmac_key(dbutils.secrets.get(spark.conf.get("b4l.secret_scope"), "pseudonymisation_key"))
 BRONZE_SCHEMA = f"{CATALOG}.{PREFIX}_bronze"
 GOLD_SCHEMA = f"{CATALOG}.{PREFIX}_gold"
 

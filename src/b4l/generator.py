@@ -167,7 +167,8 @@ def _waitlist(world: World, wl: pd.DataFrame) -> pd.DataFrame:
     for r in wl.itertuples():
         day = world.days[r.day_idx]
         ws, we = day.cell_dt(r.cell_lo), day.cell_dt(r.cell_hi)
-        if r.resolved_booking_id is not None:
+        resolved = pd.notna(r.resolved_booking_id)
+        if resolved:
             status = "resolved"
         elif we < world.now:
             status = "expired"
@@ -177,7 +178,7 @@ def _waitlist(world: World, wl: pd.DataFrame) -> pd.DataFrame:
             "waitlist_id": r.waitlist_id, "player_id": pid[r.player_idx], "requested_date": day.d,
             "window_start_ts": ws, "window_end_ts": we, "party_size": r.party_size, "created_at": r.created_at,
             "channel": r.channel, "status": status, "resolved_booking_id": r.resolved_booking_id,
-            "resolved_at": r.resolved_at if r.resolved_booking_id is not None else None,
+            "resolved_at": r.resolved_at if resolved else None,
         })
     return pd.DataFrame(rows)
 
@@ -210,8 +211,9 @@ def _demo_moments(world: World, out: dict[str, pd.DataFrame]) -> pd.DataFrame:
          "slot_date": world.as_of, "slot_start_ts": None, "court_id": None,
          "player_id": pid[demo["drifter_idx"]], "booking_id": None},
         {"moment_id": 4, "title": "Likely late cancellation, waitlist backfill",
-         "description": "An upcoming Thursday 19:00 booking by a player with a history of late cancellations. If it "
-                        "is cancelled, the next waitlisted player is offered the court.",
+         "description": f"An upcoming {thu.d:%A} 19:00 booking by a player with a history of late cancellations. "
+                        "The evening is fully booked with players on the waitlist: if it is cancelled, the next "
+                        "waitlisted player is offered the court.",
          "slot_date": thu.d, "slot_start_ts": datetime.combine(thu.d, time(19, 0)),
          "court_id": forced_row["court_id"] if forced_row is not None else None, "player_id": canceller,
          "booking_id": forced_row["booking_id"] if forced_row is not None else None},
@@ -248,6 +250,12 @@ def demo_moment_checks(world: World, bronze: dict[str, pd.DataFrame]) -> pd.Data
     upcoming = int(((mine["day_idx"] == demo["late_cancel_day_idx"]) & (mine["status"] == "upcoming")).sum())
     validate._check(rows, "demo_late_canceller", "hard_rule", late >= 2 and upcoming >= 1,
                     f"late_or_no_show={late} upcoming_thu={upcoming}", "history >= 2 and an upcoming Thursday booking")
+    thu_19 = pd.Timestamp(datetime.combine(world.days[demo["late_cancel_day_idx"]].d, time(19, 0)))
+    wl = bronze["waitlist"]
+    waiting = int(((wl["status"] == "open") & (wl["window_start_ts"] <= thu_19) & (wl["window_end_ts"] >= thu_19)).sum())
+    # A warning, not a gate: whether a waitlist has formed 2-4 days ahead depends on chance.
+    validate._check(rows, "demo_canceller_slot_has_waitlist", "statistical", waiting >= 1,
+                    f"open_requests={waiting}", ">= 1 open waitlist request covering the canceller's start")
 
     w = bronze["pass_wallets"]
     w = w[(w["player_id"] == pid[demo["chrono_idx"]]) & (w["purchased_at"] == demo["chrono_purchased_at"])]

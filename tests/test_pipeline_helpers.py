@@ -80,6 +80,17 @@ def test_hmac_is_keyed_and_null_safe():
     assert ph.hmac_hex("k1", "P0001") != ph.hmac_hex("k2", "P0001")
     assert ph.hmac_hex("k1", "P0001") != hashlib.sha256(b"P0001").hexdigest()
     assert ph.hmac_hex("k1", None) is None
+
+
+@pytest.mark.parametrize("key", [None, "", "{{secrets/b4l/pseudonymisation_key}}", "short"])
+def test_unresolved_or_weak_hmac_key_is_rejected(key):
+    with pytest.raises(ValueError):
+        ph.require_hmac_key(key)
+
+
+def test_resolved_hmac_key_is_accepted():
+    key = "a" * 64
+    assert ph.require_hmac_key(key) == key
     assert ph.hmac_hex("k1", "P0001") == hmac.new(b"k1", b"P0001", hashlib.sha256).hexdigest()
 
 

@@ -16,6 +16,5 @@ resources:
         b4l.catalog: ${var.catalog}
         b4l.schema_prefix: ${var.schema_prefix}
         b4l.secret_scope: ${var.secret_scope}
-        b4l.hmac_key: "{{secrets/${var.secret_scope}/pseudonymisation_key}}"
         # Bronze timestamps are Lausanne wall-clock times written in a UTC session; read them the same way.
         spark.sql.session.timeZone: UTC

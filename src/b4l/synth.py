@@ -25,6 +25,7 @@ SEGMENT_SHARE = {
 }
 SKILLS = ("Beginner", "Intermediate", "Advanced")
 FLAKY_Z = 1.036  # standard-normal cut-off for the top ~15% of players by cancellation propensity
+THURSDAY_EVENING_DEMAND = 1.6
 
 # Willingness to pay: log(WTP / tariff) ~ Normal(mu, sigma). Share booking at the tariff is
 # Phi(mu / sigma); point elasticity at the tariff is phi(mu/sigma) / (sigma * Phi(mu/sigma)).
@@ -556,16 +557,24 @@ def setup_demo_moments(world: World) -> None:
     players.loc[drifter, "habit_day2"] = (int(players.at[drifter, "habit_day"]) + 2) % 4
     demo["drifter_idx"] = drifter
 
-    thursday = _first_future(world, 3, 2)
+    # Thursday when it is 2-4 days ahead, otherwise the nearest Mon-Fri evening in that range (busy enough to
+    # have a waitlist; further ahead most evening bookings are not made yet).
+    near = [d for d in world.days if 2 <= (d.d - world.as_of).days <= 4 and d.weekday <= 4
+            and d.day_type == "weekday" and not d.is_public_holiday]
+    thursday = next((d for d in near if d.weekday == 3), near[0] if near else _first_future(world, 3, 2))
     canceller = int(candidates.index[7])
     players.loc[canceller, ["habit_day", "habit_hour", "activity", "cancel_propensity", "is_flexible"]] = [
-        3, 19.0, 4.0, 7.0, False]
+        thursday.weekday, 19.0, 4.0, 7.0, False]
     demo["forced_intents"].append({
         "day_idx": thursday.idx, "start": time(19, 0), "player_idx": canceller,
         "overrides": {"booked_at": datetime.combine(world.as_of, time(0)) - timedelta(days=5, hours=3),
                       "force_book": True, "cancel_mult": 0.0, "dur_cells": 2, "party_size": 4,
                       "family_rate": False, "flexible": False, "u_court": 0.3},
     })
+    # A busy Thursday evening so the canceller's court has players waiting for it (waitlist backfill).
+    from b4l.demand import band_of
+
+    demo["extra_demand"] = {(thursday.idx, band_of(thursday, 19.0)): THURSDAY_EVENING_DEMAND - 1.0}
     demo["canceller_idx"] = canceller
     demo["late_cancel_day_idx"] = thursday.idx
 

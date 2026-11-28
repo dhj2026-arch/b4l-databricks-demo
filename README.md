@@ -18,7 +18,8 @@ A Databricks demo for the [B4L Fondation](https://b4l-fondation.ch/) badminton c
 04_setup_lakebase           ->  Lakebase project b4l-ops, database databricks_postgres:
                                 b4l_sync.slot_price_recommendations (snapshot synced table),
                                 b4l_ops (live_court_slots, matchmaking_lobbies, agent_action_log)
-05_agent_bricks_tools       ->  b4l_gold     read-only UC function get_day_context (weather, holidays, events)
+05_agent_bricks_tools       ->  b4l_gold     read-only UC functions get_day_context, apply_dynamic_price_with_guardrails,
+                                              trigger_player_concierge, find_doubles_partners, get_open_waitlist
 06_setup_genie              ->  Genie space "B4L Smart Badminton Center"
 apps/staff_ops_app          ->  Databricks App "b4l-staff-ops" (heatmap, slots, pricing impact, players, Ask Genie)
 ```
@@ -44,7 +45,17 @@ status and decision columns and insert into the log (no delete). The app writes 
 `get_day_context(start_date, n_days)` returns one row per day with opening hours, weather (a forecast for upcoming
 days), Vaud public and school holidays, Vaudoise Aréna events and a demand hint that restates the effects built into
 the simulator (e.g. rainy weekend about +25%). The staff app shows it as a *Day outlook* above the heatmap and the
-slots; the app's service principal has `EXECUTE` on the function only.
+slots. `apply_dynamic_price_with_guardrails(slot_id, proposed_price)` returns the price the guardrails allow and why;
+the app runs it before writing a manual override. `trigger_player_concierge(player_uuid, trigger_type)` drafts a French
+or English message for a waitlist backfill, a doubles match, a Pass Chrono expiry reminder or a CHF 10 stringing
+voucher; `find_doubles_partners(player_uuid)` suggests up to 10 active players at the same level and a similar hour;
+`get_open_waitlist(start_date, n_days)` lists open waitlist requests. In the *Players* tab staff pick a trigger and a
+player, edit the draft and approve it (logged in `agent_action_log`; nothing is sent in this demo), or open a doubles
+lobby in `matchmaking_lobbies`: staff set the game length (2 h by default) and pick a court open for the whole game at a
+start near the organiser's usual hour (under-filled starts first), can approve the court's AI discount on the spot, and the app drafts an invitation for the organiser
+and each invited partner in their language with the court and its live price. The lobby and the invitations are
+logged in one transaction, after checking the court is still open at that price. `setup_tools` checks every function against a Python
+copy of its rules before granting; the app's service principal has `EXECUTE` on the functions only.
 
 ## Deploy and run (FEVM workspace)
 

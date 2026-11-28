@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+import agent_tools as at
 import day_outlook
 import domain as d
 import mock_data
@@ -81,6 +82,16 @@ class Backend(Protocol):
     def price_recommendations(self) -> pd.DataFrame: ...
 
     def day_context(self, start: date, n_days: int = 1) -> pd.DataFrame: ...
+
+    def guardrail(self, slot_id: str, price: float) -> dict | None: ...
+
+    def concierge(self, player_uuid: str, trigger: str) -> dict | None: ...
+
+    def doubles_partners(self, player_uuid: str) -> pd.DataFrame: ...
+
+    def open_waitlist(self, start: date, n_days: int = 7) -> pd.DataFrame: ...
+
+    def organisers(self, limit: int = 300) -> pd.DataFrame: ...
 
 
 CURVE_SLOT_COLUMNS = ["slot_key", "slot_start_ts", "tier", "demo_label", "base_price_chf", "recommended_price_chf"]
@@ -157,6 +168,43 @@ class MockBackend:
 
     def day_context(self, start: date, n_days: int = 1) -> pd.DataFrame:
         return day_outlook.mock_day_context(start, n_days, self._as_of)
+
+    def _players(self) -> pd.DataFrame:
+        return mock_data.player_features(self._as_of)
+
+    def guardrail(self, slot_id: str, price: float) -> dict | None:
+        key = slot_id[:15]
+        try:
+            f = mock_data.slot_features(date.fromisoformat(key[:10]), self._as_of)
+        except ValueError:
+            return None
+        row = f[f["slot_key"] == key]
+        return at.guardrail(row.iloc[0].to_dict(), price) if not row.empty else None
+
+    def concierge(self, player_uuid: str, trigger: str) -> dict | None:
+        p = self._players()
+        row = p[p["player_uuid"] == player_uuid]
+        if row.empty:
+            return None
+        wl = self.open_waitlist(self._as_of, d.FUTURE_DAYS)
+        mine = wl[wl["player_uuid"] == player_uuid]
+        return at.concierge_message(row.iloc[0].to_dict(), trigger, self._as_of,
+                                    mine.iloc[0].to_dict() if not mine.empty else None)
+
+    def doubles_partners(self, player_uuid: str) -> pd.DataFrame:
+        return at.doubles_partners(self._players(), player_uuid)
+
+    def open_waitlist(self, start: date, n_days: int = 7) -> pd.DataFrame:
+        days = [start + timedelta(days=i) for i in range(max(1, min(int(n_days), 31)))]
+        slots = pd.concat([mock_data.slot_features(x, self._as_of) for x in days], ignore_index=True)
+        wl = at.mock_open_waitlist(self._players(), slots[slots["is_future"]])
+        return wl.sort_values(["window_start_ts", "waitlist_id"]).reset_index(drop=True)
+
+    def organisers(self, limit: int = 300) -> pd.DataFrame:
+        p = self._players()
+        p = p[p["preferred_hour"].notna() & (p["plays_last_30d"] > 0)]
+        return (p.sort_values(["plays_last_30d", "player_uuid"], ascending=[False, True])[at.PLAYER_PICK_COLUMNS]
+                .head(limit).reset_index(drop=True))
 
 
 def _convert(series: pd.Series, type_name: str) -> pd.Series:
@@ -316,6 +364,42 @@ class SqlBackend:
             f"SELECT {', '.join(day_outlook.COLUMNS)} FROM {self.gold}.get_day_context(:start, :n) ORDER BY date",
             {"start": (start.isoformat(), "DATE"), "n": (int(n_days), "INT")},
         )
+
+    def _fn(self, name: str) -> str:
+        return f"{self.gold}.{name}"
+
+    @staticmethod
+    def _first(df: pd.DataFrame) -> dict | None:
+        if df.empty:
+            return None
+        return {k: (None if not isinstance(v, (list, tuple)) and pd.isna(v) else v)
+                for k, v in df.iloc[0].to_dict().items()}
+
+    def guardrail(self, slot_id: str, price: float) -> dict | None:
+        return self._first(self.query(
+            f"SELECT {', '.join(at.GUARDRAIL_COLUMNS)} FROM {self._fn('apply_dynamic_price_with_guardrails')}(:s, :p)",
+            {"s": (slot_id, "STRING"), "p": (float(price), "DOUBLE")}))
+
+    def concierge(self, player_uuid: str, trigger: str) -> dict | None:
+        return self._first(self.query(
+            f"SELECT {', '.join(at.CONCIERGE_COLUMNS)} FROM {self._fn('trigger_player_concierge')}(:u, :t)",
+            {"u": (player_uuid, "STRING"), "t": (trigger, "STRING")}))
+
+    def doubles_partners(self, player_uuid: str) -> pd.DataFrame:
+        return self.query(
+            f"SELECT {', '.join(at.PARTNER_COLUMNS)} FROM {self._fn('find_doubles_partners')}(:u)",
+            {"u": (player_uuid, "STRING")})
+
+    def open_waitlist(self, start: date, n_days: int = 7) -> pd.DataFrame:
+        return self.query(
+            f"SELECT {', '.join(at.WAITLIST_COLUMNS)} FROM {self._fn('get_open_waitlist')}(:start, :n)",
+            {"start": (start.isoformat(), "DATE"), "n": (int(n_days), "INT")})
+
+    def organisers(self, limit: int = 300) -> pd.DataFrame:
+        return self.query(
+            f"""SELECT {', '.join(at.PLAYER_PICK_COLUMNS)} FROM {self.gold}.player_features
+            WHERE preferred_hour IS NOT NULL AND plays_last_30d > 0
+            ORDER BY plays_last_30d DESC, player_uuid LIMIT {int(limit)}""")
 
 
 def databricks_client() -> tuple[Any | None, str]:

@@ -72,3 +72,11 @@ def test_merge_keeps_staff_decisions_only_on_open_courts():
     assert "ON CONFLICT (slot_id) DO UPDATE" in sql
     assert sql.count("live.status IN ('approved', 'overridden') AND EXCLUDED.status = 'proposed'") == 3
     assert "JOIN b4l_sync.slot_price_recommendations" in sql
+
+
+def test_lobbies_have_a_duration_added_in_place():
+    stmts = lb.ddl("b4l_ops")
+    create = next(s for s in stmts if "matchmaking_lobbies (" in s)
+    alter = next(s for s in stmts if s.startswith("ALTER TABLE b4l_ops.matchmaking_lobbies"))
+    assert f"DEFAULT {lb.DEFAULT_GAME_MINUTES}" in create and "ADD COLUMN IF NOT EXISTS duration_minutes" in alter
+    assert stmts.index(alter) == stmts.index(create) + 1

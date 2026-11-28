@@ -22,6 +22,7 @@ from b4l import pricing_rules as pr
 OPEN, BOOKED, BLOCKED = "open", "booked", "blocked"
 PROPOSED, APPROVED, OVERRIDDEN, EXPIRED = "proposed", "approved", "overridden", "expired"
 STAFF_DECISIONS = (APPROVED, OVERRIDDEN)
+DEFAULT_GAME_MINUTES = 120
 
 _IDENT = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -63,11 +64,15 @@ def ddl(ops: str) -> list[str]:
             lobby_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             court_id TEXT,
             slot_start TIMESTAMPTZ NOT NULL,
+            duration_minutes INTEGER NOT NULL DEFAULT {DEFAULT_GAME_MINUTES}
+                CHECK (duration_minutes BETWEEN 30 AND 240 AND duration_minutes % 30 = 0),
             skill_tier TEXT NOT NULL,
             spots_open INTEGER NOT NULL CHECK (spots_open BETWEEN 0 AND 3),
             player_uuids TEXT[] NOT NULL DEFAULT '{{}}',
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )""",
+        f"""ALTER TABLE {ops}.matchmaking_lobbies ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL
+            DEFAULT {DEFAULT_GAME_MINUTES} CHECK (duration_minutes BETWEEN 30 AND 240 AND duration_minutes % 30 = 0)""",
         f"""CREATE TABLE IF NOT EXISTS {ops}.agent_action_log (
             action_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             ts TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -47,10 +47,12 @@ Each bar is a 1-hour **booking start time** on an upcoming day (bookings start o
 
 **Price decisions (one court at a time):** pick a start time and an open court, then
 - **Approve AI price** sets the court's live price to the recommendation, or
-- **Manual override** sets a price you choose (whole francs, within the tier's guardrails) with a reason.
+- **Manual override** sets a price you choose (whole francs, within the tier's guardrails) with a reason. The app
+  checks it with the UC function `apply_dynamic_price_with_guardrails` before writing.
 
 Until someone decides, an open court stays at the tariff (*proposed*). Booked and blocked courts cannot be changed.
-Each decision is written to Lakebase together with an entry in the action log (who, when, old and new price).
+Each decision is written to Lakebase together with an entry in the action log (who, when, old and new price). The
+log also lists concierge messages and doubles lobbies from the *Players* tab.
 Decisions survive the nightly refresh; only the recommendation and its reason are updated.
 """
 
@@ -92,6 +94,29 @@ booking system.
 **Pass Chrono expiring ≤ 14 days (right)**
 - Each row is a player with prepaid hours that will be lost at expiry. **Days to expiry 0–2** are urgent.
 - Action: remind them to book, ideally into a quiet slot from *Slots & prices*, which links both use cases.
+
+**Concierge**
+- Pick a trigger, then a player from the matching list (open waitlist, Pass Chrono with hours left expiring within
+  30 days, at-risk regulars, or active players for a doubles game).
+- The draft comes from `trigger_player_concierge` in the player's language (FR or EN). Edit it if needed, then
+  **Approve & log**: the message goes into the action log with your email. Nothing is sent to the player in this demo.
+
+**Doubles matchmaking**
+- Pick an organiser: the table shows up to 10 partners at the same level, active in the last 30 days, whose usual
+  start hour is within 2 h. **Score** = 2 if same usual day + (2 − hour gap) + 1 if they have played together.
+- **Game length:** 2 h by default (1 h, 1 h 30 or 3 h possible). A court counts only if it is open (not booked or
+  blocked) for the whole game.
+- **Game time and court:** upcoming starts (next 7 days) within 2 h of the organiser's usual hour with at least one
+  such court. **Under-filled** starts come first, then the organiser's usual day. The game is priced as 1-hour
+  blocks, each at the court's live price for its start. *Price status* tells whether the cheapest court has an
+  approved discount, is at the tariff, or has a lower AI price not yet approved.
+- Pick a start and a court (cheapest first). If its AI price is lower and not approved, **Approve** it here to offer
+  the discount (one approval per hour block, logged like in *Slots & prices*).
+- Pick up to 3 partners. The app drafts one invitation per person in their language, quoting the court, start and
+  end, the game price, the tariff it replaces when discounted, and the share per player. Edit a message if needed.
+- **Create lobby & log** checks the court is still open for the whole game at the quoted price, then saves the lobby
+  (with its length, 3 spots open) and logs every invitation in one go. Nothing is sent to the players and the
+  court is not reserved in this demo.
 """
 
 GENIE = """

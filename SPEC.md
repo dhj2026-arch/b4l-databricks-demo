@@ -295,6 +295,7 @@ The app service principals get only the grants they need. Lakebase is the only o
   - a pass expiry reminder
   - a retention voucher. `[ASSUMPTION]` A CHF 10 stringing voucher; B4L offers stringing in-house.
 - `find_doubles_partners(player_uuid)` is a table function returning players with the same skill tier and time preferences.
+- `get_open_waitlist(start_date, n_days)` is a table function returning open waitlist requests (pseudonymised), so staff can pick whom to offer a freed court.
 - `get_day_context(start_date, n_days)` is a table function returning one row per day: day type and opening hours, weather (condition, mean temperature, rain), public holiday, Vaud school holiday, Vaudoise Aréna event, and an English `demand_hint` (e.g. "Rainy weekend: expect busier courts than usual"; Bad'matin not held in school holidays; closed days flagged). It reads the synthetic `weather_lausanne` and `calendar` tables, so it stays consistent with the bookings; a live forecast is out of scope. The staff app shows it as a "Day outlook" strip above the heatmap and the slots.
 
 **Writes** happen in `staff_ops_app` after staff approve: an update to Lakebase plus an `agent_action_log` row. Optionally, an Agent Bricks Supervisor combines the Genie space with these functions, and the app still performs the write.
@@ -309,7 +310,8 @@ The app service principals get only the grants they need. Lakebase is the only o
    - A 16-court daily heatmap that follows each day's rentable hours (weekday 08:00–22:00, weekend 09:30–19:00), filterable by hall.
    - It shows the base tier price vs. the dynamic price, and court blocks (Bad'matin, private lessons, club).
    - "Approve AI Price" and "Manual Override" buttons write to Lakebase.
-   - A live `agent_action_log` feed: waitlist backfills, doubles invites, vouchers and pass expiry reminders.
+   - A live `agent_action_log` feed: price decisions, waitlist backfills, doubles invites, vouchers and pass expiry reminders.
+   - Concierge and doubles panels on the Players tab: drafts from `trigger_player_concierge` and partners from `find_doubles_partners`; staff approve, and the app logs the message (not sent in the demo) or creates a `matchmaking_lobbies` row with a game length (`duration_minutes`, 2 h by default) on a court open for the whole game, chosen from upcoming starts near the organiser's usual hour (under-filled first), with one logged invitation per player (organiser and invited partners, drafted in the app in each player's language, quoting the court's live price and any approved discount).
    - A "Day outlook" strip (weather, holidays, Aréna events, demand hint) from `get_day_context`.
    - A **real Genie Conversation API** widget.
    - A **Pricing impact** tab (see 5.F).

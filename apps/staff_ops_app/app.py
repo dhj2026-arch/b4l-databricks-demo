@@ -1,4 +1,4 @@
-"""B4L Reception & Ops Cockpit: reads the gold tables; writes price decisions and the action log to Lakebase only."""
+"""B4L Reception & Ops Cockpit: reads the gold tables and UC functions; writes decisions and the action log to Lakebase only."""
 
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import agent_tools as at
 import domain as d
 import guide
 from data import Settings, make_backend, occupancy, pricing_headline, underfilled_slots
 from day_outlook import CONDITION_ICON, HINT_SEPARATOR
 from genie_client import SAMPLE_QUESTIONS, GenieClient
-from ops_store import DECIDABLE, LOG_LIMIT, DecisionError, make_ops_store, slot_time
+from ops_store import DECIDABLE, LOG_LIMIT, DecisionError, make_ops_store, short_uuid, slot_time
 
 st.set_page_config(page_title="B4L Reception & Ops Cockpit", page_icon="🏸", layout="wide")
 
@@ -370,14 +371,20 @@ with tab_slots:
                     reason = st.text_input("Reason (required)", placeholder="e.g. Club tournament warm-up")
                     if st.form_submit_button(f"✏️ Override {row['court_id']}"):
                         try:
+                            g = backend.guardrail(court, float(price))
+                            if g is None:
+                                raise DecisionError(f"No slot features for {slot_time(row['slot_key'])}.")
+                            if g["applied_rule"] != "within_bounds" or g["final_price_chf"] != price:
+                                raise DecisionError(f"Guardrails: {g['reason']} (CHF {g['final_price_chf']:.0f}).")
                             r = ops.override(court, price, reason, actor)
                             st.session_state["decision_flash"] = (
                                 f"Override CHF {r['dynamic_price_chf']:.0f} on {r['court_id']} at "
-                                f"{slot_time(r['slot_key'])}.")
+                                f"{slot_time(r['slot_key'])} · guardrails: {g['reason'].lower()}.")
                             st.rerun()
                         except DecisionError as e:
                             st.error(str(e))
-            st.caption(f"Signed in as {actor}. Every decision is logged below.")
+            st.caption(f"Signed in as {actor}. Overrides are checked with `apply_dynamic_price_with_guardrails` "
+                       "first; every decision is logged below.")
 
     st.subheader(f"Action log · latest {LOG_LIMIT}")
     try:
@@ -386,13 +393,13 @@ with tab_slots:
         st.error(f"Cannot read the action log: {e}")
         log = None
     if log is not None and log.empty:
-        st.caption("No decisions yet.")
+        st.caption("No decisions or concierge actions yet.")
     elif log is not None:
         st.dataframe(
-            log.assign(slot_key=log["slot_key"].map(slot_time)), hide_index=True, use_container_width=True,
+            log.assign(slot_key=log["slot_key"].map(lambda k: slot_time(k) if isinstance(k, str) else None)), hide_index=True, use_container_width=True,
             column_config={
                 "ts": st.column_config.DatetimeColumn("When (UTC)", format="DD.MM HH:mm:ss"),
-                "actor": "Who", "action_type": "Action", "status": "Status", "court_id": "Court",
+                "actor": "Who", "action_type": "Action", "status": "Status", "summary": "What", "court_id": "Court",
                 "slot_key": "Slot",
                 "old_price_chf": st.column_config.NumberColumn("Old", format="CHF %.0f"),
                 "new_price_chf": st.column_config.NumberColumn("New", format="CHF %.0f"),
@@ -560,6 +567,216 @@ with tab_players:
                     "days_to_pass_expiry": "Days to expiry",
                 },
             )
+
+    actor = current_actor()
+    flash = st.session_state.pop("players_flash", None)
+    if flash:
+        st.success(flash)
+
+    st.subheader("Concierge · draft a message, staff approve")
+    st.caption("Drafts come from the UC function `trigger_player_concierge` in the player's language. Approving "
+               "logs the message in Lakebase; nothing is sent to the player in this demo.")
+    trigger = st.radio("Trigger", at.TRIGGERS, format_func=at.TRIGGER_LABELS.get, horizontal=True,
+                       key="concierge_trigger")
+    if trigger == at.WAITLIST_BACKFILL:
+        wl = fetch("open_waitlist", AS_OF, d.FUTURE_DAYS)
+        cands = None if wl is None else wl.drop_duplicates("player_uuid").assign(
+            label=lambda f: [f"{short_uuid(u)} · waiting for {pd.Timestamp(t):%a %d %b %H:%M} · party of {n} · {lang}"
+                             for u, t, n, lang in zip(f["player_uuid"], f["window_start_ts"], f["party_size"],
+                                                      f["preferred_lang"])])
+    elif trigger == at.PASS_EXPIRY:
+        ch = fetch("expiring_chrono", at.PASS_REMINDER_DAYS)
+        cands = None if ch is None else ch[ch["pass_hours_remaining"].fillna(0) > 0].assign(
+            label=lambda f: [f"{short_uuid(u)} · {int(h)} h left · expires in {int(n)} days · {lang}"
+                             for u, h, n, lang in zip(f["player_uuid"], f["pass_hours_remaining"],
+                                                      f["days_to_pass_expiry"], f["preferred_lang"])])
+    elif trigger == at.RETENTION_VOUCHER:
+        rk = fetch("at_risk_players", 2.0, 200)
+        cands = None if rk is None else rk.assign(
+            label=lambda f: [f"{short_uuid(u)} · {s} · {int(p)} plays last 30 d (usually {b:.1f}) · {lang}"
+                             for u, s, p, b, lang in zip(f["player_uuid"], f["segment"], f["plays_last_30d"],
+                                                         f["avg_monthly_plays_baseline"], f["preferred_lang"])])
+    else:
+        og = fetch("organisers", 300)
+        cands = None if og is None else og.assign(
+            label=lambda f: [f"{short_uuid(u)} · {t} · {f2} · {lang}" for u, t, f2, lang in zip(
+                f["player_uuid"], f["skill_tier"],
+                [f"{d.DAY_NAMES[int(x) - 1][:3]} {int(h):02d}:00" if pd.notna(x) else "no usual day"
+                 for x, h in zip(f["preferred_day_of_week"], f["preferred_hour"])], f["preferred_lang"])])
+    if cands is not None and cands.empty:
+        st.info("No player matches this trigger right now.")
+    elif cands is not None:
+        cands = cands.reset_index(drop=True)
+        who = st.selectbox(f"Player ({len(cands)} candidates)", range(len(cands)),
+                           format_func=lambda i: cands.at[i, "label"], key=f"concierge_player_{trigger}")
+        uuid_ = cands.at[who, "player_uuid"]
+        try:
+            draft = load(backend, backend.name, "concierge", uuid_, trigger)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Could not draft the message: {e}")
+            draft = None
+        if draft is None:
+            st.warning("Player not found in the gold features.")
+        elif not draft["eligible"]:
+            st.info(f"Not eligible: {draft['note']}.")
+        else:
+            with st.form(f"concierge_form_{trigger}_{uuid_}"):
+                msg = st.text_area(f"Message ({draft['language'].upper()}) · edit before approving if needed",
+                                   draft["message"], height=110)
+                if st.form_submit_button("📨 Approve & log (demo: not sent)"):
+                    try:
+                        ops.send_concierge(draft, msg, actor)
+                        st.session_state["players_flash"] = (
+                            f"Logged a {at.TRIGGER_LABELS[trigger].lower()} message for {short_uuid(uuid_)}.")
+                        st.rerun()
+                    except DecisionError as e:
+                        st.error(str(e))
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"Cannot write to Lakebase: {e}")
+
+    st.subheader("Doubles matchmaking · open a lobby")
+    st.caption(f"Partners come from the UC function `find_doubles_partners`: same level, active in the last 30 days, "
+               f"usual start hour within {at.PARTNER_HOUR_WINDOW} h. Staff pick an open court (under-filled starts first) "
+               f"and open the lobby: it is saved in Lakebase with {at.LOBBY_SPOTS} spots open, and one invitation per "
+               "person, quoting the court's live price, is logged (not sent in this demo).")
+    org = fetch("organisers", 300)
+    if org is not None and not org.empty:
+        org = org.reset_index(drop=True)
+        oi = st.selectbox(
+            "Organiser (most active players first)", range(len(org)), key="doubles_organiser",
+            format_func=lambda i: (lambda r: f"{short_uuid(r['player_uuid'])} · {r['skill_tier']} · "
+                                             f"{r['plays_last_30d']} plays last 30 d · {r['preferred_lang']}")(org.iloc[i]))
+        o = org.iloc[oi]
+        partners = fetch("doubles_partners", o["player_uuid"])
+        if partners is not None and partners.empty:
+            st.info("No active partner at this level and time.")
+        elif partners is not None:
+            st.dataframe(
+                partners, hide_index=True, use_container_width=True,
+                column_config={
+                    "partner_uuid": st.column_config.TextColumn("Partner (pseudonymised)", width="medium"),
+                    "skill_tier": "Level", "preferred_day_of_week": "Usual day (1 = Mon)",
+                    "preferred_hour": "Usual hour", "plays_last_30d": "Plays last 30 d",
+                    "played_together": st.column_config.CheckboxColumn("Played together"),
+                    "match_score": "Score", "preferred_lang": "Lang",
+                },
+            )
+            minutes = st.radio("Game length", at.GAME_MINUTES, index=at.GAME_MINUTES.index(at.DEFAULT_GAME_MINUTES),
+                               format_func=lambda m: at.duration_label(m, True), horizontal=True, key="lobby_minutes")
+            try:
+                courts_ahead = ops.court_slots_between(AS_OF, AS_OF + timedelta(days=8))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Cannot reach Lakebase: {e}")
+                courts_ahead = None
+            if courts_ahead is not None:
+                days = sorted({date.fromisoformat(k[:10]) for k in courts_ahead["slot_key"]})
+                feats = [f for f in (fetch("slot_features", x) for x in days) if f is not None and not f.empty]
+                feats = underfilled_slots(pd.concat(feats, ignore_index=True)) if feats else pd.DataFrame()
+                options = at.lobby_slot_options(courts_ahead, feats, o["preferred_day_of_week"],
+                                                int(o["preferred_hour"]), minutes)
+                if options.empty:
+                    st.info(f"No court open for {at.duration_label(minutes, False)} in the next 7 days within "
+                            f"{at.PARTNER_HOUR_WINDOW} h of the organiser's usual hour.")
+            if courts_ahead is not None and not options.empty:
+                st.markdown(f"**Game time and court** · courts open for the whole {at.duration_label(minutes, False)}, "
+                            f"starting within {at.PARTNER_HOUR_WINDOW} h of the organiser's usual hour "
+                            f"({int(o['preferred_hour']):02d}:00) · under-filled starts first")
+                st.dataframe(
+                    options.assign(price=[at.price_status(r.best_price_chf, r.tariff_chf, r.ai_price_chf)
+                                          for r in options.itertuples()],
+                                   booked_share=options["booked_share"].astype(float) * 100,
+                                   hist_fill_rate_4w=options["hist_fill_rate_4w"].astype(float) * 100)[[
+                        "start", "end", "tier", "underfilled", "usual_day", "open_courts", "discounted_courts",
+                        "best_price_chf", "tariff_chf", "price", "booked_share", "hist_fill_rate_4w"]],
+                    hide_index=True, use_container_width=True, height=250,
+                    column_config={
+                        "start": st.column_config.DatetimeColumn("Start", format="ddd DD.MM HH:mm"),
+                        "end": st.column_config.DatetimeColumn("End", format="HH:mm"), "tier": "Tier at start",
+                        "underfilled": st.column_config.CheckboxColumn("Under-filled"),
+                        "usual_day": st.column_config.CheckboxColumn("Organiser's usual day"),
+                        "open_courts": "Courts open", "discounted_courts": "With approved discount",
+                        "best_price_chf": st.column_config.NumberColumn("Cheapest game", format="CHF %.2f"),
+                        "tariff_chf": st.column_config.NumberColumn("At tariff", format="CHF %.2f"),
+                        "price": "Price status",
+                        "booked_share": st.column_config.NumberColumn("Booked now", format="%.0f%%"),
+                        "hist_fill_rate_4w": st.column_config.NumberColumn("Usual fill", format="%.0f%%"),
+                    },
+                )
+                si = st.selectbox(
+                    "Start time", range(len(options)), key=f"lobby_slot_{o['player_uuid']}_{minutes}",
+                    format_func=lambda i: (lambda r: f"{r['start']:%a %d %b %H:%M}–{r['end']:%H:%M} · {r['tier']} · "
+                                                     f"{r['open_courts']} courts open · from CHF "
+                                                     f"{at.chf_amount(r['best_price_chf'])}"
+                                                     + (" · under-filled" if r["underfilled"] else ""))(options.iloc[i]))
+                opt = options.iloc[si]
+                start = opt["start"].to_pydatetime()
+                games = at.court_games(at.court_index(courts_ahead), start, minutes).set_index("court_id")
+                cid = st.selectbox(
+                    "Court (cheapest game first)", games.index.tolist(), key=f"lobby_court_{opt['slot_key']}_{minutes}",
+                    format_func=lambda c: (lambda g: f"{c} · {g['hall_zone']} · CHF {at.chf_amount(g['price_chf'])} · "
+                                                     + at.price_status(g["price_chf"], g["tariff_chf"],
+                                                                       g["ai_price_chf"]))(games.loc[c]))
+                game = games.loc[cid]
+                if game["to_approve"]:
+                    st.info(f"The AI price for this game on {cid} is CHF {at.chf_amount(game['ai_price_chf'])} "
+                            f"(now CHF {at.chf_amount(game['price_chf'])}). Approve it to offer the discount in the "
+                            f"invitations: {len(game['to_approve'])} hour block(s), each logged like in the Slots tab.")
+                    if st.button(f"✅ Approve AI price for {cid}", key="lobby_approve_btn"):
+                        try:
+                            for sid in game["to_approve"]:
+                                ops.approve(sid, actor)
+                            st.session_state["players_flash"] = (
+                                f"Approved the AI price on {cid} for {start:%a %d %b %H:%M}–{opt['end']:%H:%M}.")
+                            st.rerun()
+                        except DecisionError as e:
+                            st.error(str(e))
+                invited = st.multiselect(f"Invite (up to {at.LOBBY_SPOTS})", partners["partner_uuid"].tolist(),
+                                         default=partners["partner_uuid"].head(at.LOBBY_SPOTS).tolist(),
+                                         max_selections=at.LOBBY_SPOTS, format_func=short_uuid,
+                                         key=f"lobby_invited_{o['player_uuid']}")
+                if invited:
+                    drafts = at.lobby_invitations(o.to_dict(), partners, invited, start, minutes, cid,
+                                                  game["price_chf"], game["tariff_chf"])
+                    st.caption("Invitations · one per person in their language · edit a message before confirming "
+                               "if needed")
+                    edited = st.data_editor(
+                        drafts.assign(player_uuid=drafts["player_uuid"].map(short_uuid)), hide_index=True,
+                        use_container_width=True, disabled=["player_uuid", "role", "language"],
+                        key=f"lobby_drafts_{o['player_uuid']}_{opt['slot_key']}_{minutes}_{cid}_"
+                            f"{game['price_chf']:.2f}_{'_'.join(invited)}",
+                        column_config={"player_uuid": "Player", "role": "Role", "language": "Lang",
+                                       "message": st.column_config.TextColumn("Message", width="large")})
+                    invitations = drafts.assign(message=edited["message"].tolist()).to_dict("records")
+                if st.button(f"🏸 Create lobby & log {len(invited) + 1 if invited else 0} invitations "
+                             "(demo: not sent)", key="lobby_btn", disabled=not invited):
+                    try:
+                        r = ops.create_lobby(
+                            o["player_uuid"], o["skill_tier"],
+                            {"court_id": cid, "slot_key": opt["slot_key"], "minutes": minutes,
+                             "price_chf": game["price_chf"], "tariff_chf": game["tariff_chf"]},
+                            invited, invitations, actor)
+                        st.session_state["players_flash"] = (
+                            f"Lobby {r['lobby_id'][:8]} opened for {start:%a %d %b %H:%M}–{opt['end']:%H:%M} on {cid} "
+                            f"at CHF {at.chf_amount(game['price_chf'])}; invitations logged for the organiser and "
+                            f"{len(invited)} partner{'s' if len(invited) > 1 else ''}.")
+                        st.rerun()
+                    except DecisionError as e:
+                        st.error(str(e))
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"Cannot write to Lakebase: {e}")
+    try:
+        lobbies = ops.lobbies()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Cannot read the lobbies: {e}")
+        lobbies = None
+    if lobbies is not None and not lobbies.empty:
+        st.caption("Open lobbies (latest first) · every action is also in the Action log on the Slots tab")
+        st.dataframe(lobbies.assign(player_uuids=lobbies["player_uuids"].map(lambda u: ", ".join(map(short_uuid, u)))),
+                     hide_index=True, use_container_width=True,
+                     column_config={"slot_start": st.column_config.DatetimeColumn("Game", format="ddd DD.MM HH:mm"),
+                                    "duration_minutes": "Minutes", "court_id": "Court",
+                                    "created_at": st.column_config.DatetimeColumn("Created", format="DD.MM HH:mm"),
+                                    "player_uuids": "Players in", "spots_open": "Spots open"})
 
 # ---------------------------------------------------------------- genie
 with tab_genie:
